@@ -1,7 +1,8 @@
 //! The scene pass: the sky over the whole screen, a depth prepass of opaque
 //! surfaces, then every visible instance shaded forward into the HDR target:
 //! opaque surfaces first (each pixel once, where the prepass left its depth),
-//! then blended ones.
+//! then water, which reads a copy of the opaque image and depth, then
+//! blended surfaces.
 
 use std::num::NonZeroU32;
 
@@ -18,11 +19,12 @@ use crate::texture::{MAX_TEXTURES, TextureStore};
 pub enum Pass {
     Opaque,
     OpaqueTwoSided,
+    Water,
     Translucent,
     Additive,
 }
 
-pub const PASSES: [Pass; 4] = [Pass::Opaque, Pass::OpaqueTwoSided, Pass::Translucent, Pass::Additive];
+pub const PASSES: [Pass; 5] = [Pass::Opaque, Pass::OpaqueTwoSided, Pass::Water, Pass::Translucent, Pass::Additive];
 
 /// One instance to draw: its mesh's index range, and its slot in the instance buffer.
 pub struct Draw {
@@ -39,8 +41,11 @@ pub struct ScenePass {
     /// Group 1: the arrays of textures.
     textures_layout: wgpu::BindGroupLayout,
     background: wgpu::RenderPipeline,
+    /// Group 2 of the water pipeline: the opaque scene's image and depth, and
+    /// the water parameters.
+    water_layout: wgpu::BindGroupLayout,
     /// Indexed like [`PASSES`].
-    pipelines: [wgpu::RenderPipeline; 4],
+    pipelines: [wgpu::RenderPipeline; 5],
     /// Depth prepass of the two opaque passes: [solid, alpha-tested] each.
     prepass: [[wgpu::RenderPipeline; 2]; 2],
     sky_sampler: wgpu::Sampler,
@@ -106,6 +111,19 @@ impl ScenePass {
             bind_group_layouts: &[Some(&layout), Some(&textures_layout)],
             immediate_size: 0,
         });
+        let water_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("water"),
+            entries: &[
+                entry(0, float_texture(wgpu::TextureViewDimension::D2)),
+                entry(1, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Depth, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
+                entry(2, storage()),
+            ],
+        });
+        let water_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("water"),
+            bind_group_layouts: &[Some(&layout), Some(&textures_layout), Some(&water_layout)],
+            immediate_size: 0,
+        });
         let depth = |write: bool, compare| {
             Some(wgpu::DepthStencilState { format: DEPTH_FORMAT, depth_write_enabled: Some(write), depth_compare: Some(compare), stencil: Default::default(), bias: Default::default() })
         };
@@ -131,22 +149,26 @@ impl ScenePass {
         let module = if ray_traced_shadows { shader::load(device, "scene", spirv!("scene_rt")) } else { shader::load(device, "scene", spirv!("scene")) };
         let pipelines = PASSES.map(|pass| {
             // Opaque surfaces only shade where the prepass found them nearest.
-            let (cull_mode, blend, compare) = match pass {
-                Pass::Opaque => (Some(wgpu::Face::Back), None, wgpu::CompareFunction::Equal),
-                Pass::OpaqueTwoSided => (None, None, wgpu::CompareFunction::Equal),
-                Pass::Translucent => (None, Some(wgpu::BlendState::ALPHA_BLENDING), wgpu::CompareFunction::GreaterEqual),
-                Pass::Additive => (None, Some(ADDITIVE), wgpu::CompareFunction::GreaterEqual),
+            // Water hides what is behind it (it draws that itself), so the
+            // blended surfaces drawn after it are hidden below it too.
+            let (cull_mode, blend, depth_stencil) = match pass {
+                Pass::Opaque => (Some(wgpu::Face::Back), None, depth(false, wgpu::CompareFunction::Equal)),
+                Pass::OpaqueTwoSided => (None, None, depth(false, wgpu::CompareFunction::Equal)),
+                Pass::Water => (Some(wgpu::Face::Back), None, depth(true, wgpu::CompareFunction::Greater)),
+                Pass::Translucent => (None, Some(wgpu::BlendState::ALPHA_BLENDING), depth(false, wgpu::CompareFunction::GreaterEqual)),
+                Pass::Additive => (None, Some(ADDITIVE), depth(false, wgpu::CompareFunction::GreaterEqual)),
             };
+            let (layout, fragment) = if pass == Pass::Water { (&water_pipeline_layout, "water_fs") } else { (&pipeline_layout, "scene_fs") };
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("scene"),
-                layout: Some(&pipeline_layout),
+                layout: Some(layout),
                 vertex: wgpu::VertexState { module: &module, entry_point: Some("scene_vs"), compilation_options: Default::default(), buffers: &[POSITION_LAYOUT, ATTRIBUTE_LAYOUT] },
                 primitive: wgpu::PrimitiveState { cull_mode, ..Default::default() },
-                depth_stencil: depth(false, compare),
+                depth_stencil,
                 multisample: Default::default(),
                 fragment: Some(wgpu::FragmentState {
                     module: &module,
-                    entry_point: Some("scene_fs"),
+                    entry_point: Some(fragment),
                     compilation_options: Default::default(),
                     targets: &[Some(wgpu::ColorTargetState { format: HDR_FORMAT, blend, write_mask: wgpu::ColorWrites::ALL })],
                 }),
@@ -194,7 +216,7 @@ impl ScenePass {
             mipmap_filter: wgpu::MipmapFilterMode::Linear,
             ..Default::default()
         });
-        Self { layout, textures_layout, background, pipelines, prepass, sampler, sky_sampler, reflection_sampler }
+        Self { layout, textures_layout, water_layout, background, pipelines, prepass, sampler, sky_sampler, reflection_sampler }
     }
 
     /// Layout of the group of textures (group 1), which the shadow pass shares.
@@ -237,46 +259,85 @@ impl ScenePass {
         [scene, textures]
     }
 
-    /// `draws` holds the draws of each pass, ordered like [`PASSES`].
-    pub fn record(&self, encoder: &mut wgpu::CommandEncoder, targets: &Targets, bind_groups: &[wgpu::BindGroup; 2], meshes: &MeshArena, draws: &[Vec<Draw>; 4]) {
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("scene"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &targets.hdr,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
-            })],
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: &targets.depth,
-                depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Discard }),
-                stencil_ops: None,
-            }),
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
-        pass.set_bind_group(0, &bind_groups[0], &[]);
-        pass.set_bind_group(1, &bind_groups[1], &[]);
+    /// Group 2 of the water pipeline.
+    pub fn water_bind_group(&self, device: &wgpu::Device, targets: &Targets, waters: &wgpu::Buffer) -> wgpu::BindGroup {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("water"),
+            layout: &self.water_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&targets.opaque_color) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&targets.opaque_depth) },
+                wgpu::BindGroupEntry { binding: 2, resource: waters.as_entire_binding() },
+            ],
+        })
+    }
 
-        pass.set_pipeline(&self.background);
-        pass.draw(0..3, 0..1);
+    /// `draws` holds the draws of each pass, ordered like [`PASSES`]. Two
+    /// render passes: the opaque scene, then (after copying it for water)
+    /// water and blended surfaces.
+    pub fn record(&self, encoder: &mut wgpu::CommandEncoder, targets: &Targets, bind_groups: &[wgpu::BindGroup; 2], water_bind_group: &wgpu::BindGroup, meshes: &MeshArena, draws: &[Vec<Draw>; 5]) {
+        let (opaque, blended) = draws.split_at(Pass::Water as usize);
+        {
+            let mut pass = begin(encoder, targets, wgpu::LoadOp::Clear(wgpu::Color::BLACK), wgpu::LoadOp::Clear(0.0), bind_groups);
+            pass.set_pipeline(&self.background);
+            pass.draw(0..3, 0..1);
 
-        meshes.bind(&mut pass, true);
-        for (prepass, draws) in self.prepass.iter().zip(draws) {
-            for draw in draws {
-                pass.set_pipeline(&prepass[draw.alpha_tested as usize]);
-                pass.draw_indexed(draw.first_index..draw.first_index + draw.index_count, draw.base_vertex, draw.instance..draw.instance + 1);
+            meshes.bind(&mut pass, true);
+            for (prepass, draws) in self.prepass.iter().zip(opaque) {
+                for draw in draws {
+                    pass.set_pipeline(&prepass[draw.alpha_tested as usize]);
+                    pass.draw_indexed(draw.first_index..draw.first_index + draw.index_count, draw.base_vertex, draw.instance..draw.instance + 1);
+                }
             }
+            draw_passes(&mut pass, &self.pipelines[..opaque.len()], opaque);
         }
-        for (pipeline, draws) in self.pipelines.iter().zip(draws) {
-            if draws.is_empty() {
-                continue;
-            }
-            pass.set_pipeline(pipeline);
-            for draw in draws {
-                pass.draw_indexed(draw.first_index..draw.first_index + draw.index_count, draw.base_vertex, draw.instance..draw.instance + 1);
-            }
+        if blended.iter().all(Vec::is_empty) {
+            return;
+        }
+        if !draws[Pass::Water as usize].is_empty() {
+            targets.copy_opaque(encoder);
+        }
+        let mut pass = begin(encoder, targets, wgpu::LoadOp::Load, wgpu::LoadOp::Load, bind_groups);
+        pass.set_bind_group(2, water_bind_group, &[]);
+        meshes.bind(&mut pass, true);
+        draw_passes(&mut pass, &self.pipelines[opaque.len()..], blended);
+    }
+}
+
+/// A render pass into the HDR target and depth, with the scene's bind groups set.
+fn begin<'a>(encoder: &'a mut wgpu::CommandEncoder, targets: &Targets, color: wgpu::LoadOp<wgpu::Color>, depth: wgpu::LoadOp<f32>, bind_groups: &[wgpu::BindGroup; 2]) -> wgpu::RenderPass<'a> {
+    // The opaque pass keeps its depth for the blended one, which drops it.
+    let store = if matches!(depth, wgpu::LoadOp::Load) { wgpu::StoreOp::Discard } else { wgpu::StoreOp::Store };
+    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("scene"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: &targets.hdr,
+            depth_slice: None,
+            resolve_target: None,
+            ops: wgpu::Operations { load: color, store: wgpu::StoreOp::Store },
+        })],
+        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+            view: &targets.depth,
+            depth_ops: Some(wgpu::Operations { load: depth, store }),
+            stencil_ops: None,
+        }),
+        timestamp_writes: None,
+        occlusion_query_set: None,
+        multiview_mask: None,
+    });
+    pass.set_bind_group(0, &bind_groups[0], &[]);
+    pass.set_bind_group(1, &bind_groups[1], &[]);
+    pass
+}
+
+fn draw_passes(pass: &mut wgpu::RenderPass, pipelines: &[wgpu::RenderPipeline], draws: &[Vec<Draw>]) {
+    for (pipeline, draws) in pipelines.iter().zip(draws) {
+        if draws.is_empty() {
+            continue;
+        }
+        pass.set_pipeline(pipeline);
+        for draw in draws {
+            pass.draw_indexed(draw.first_index..draw.first_index + draw.index_count, draw.base_vertex, draw.instance..draw.instance + 1);
         }
     }
 }

@@ -7,7 +7,7 @@ use crate::ambient::{ProbeGrid, ProbeVolume};
 use crate::buffer::GrowableBuffer;
 use crate::culling::{Frustum, Sphere};
 use crate::gpu::Gpu;
-use crate::gpu_types::{GpuInstance, GpuLight, GpuMaterial, GpuView, INSTANCE_DISTANT, NO_REFLECTION};
+use crate::gpu_types::{GpuInstance, GpuLight, GpuMaterial, GpuView, GpuWater, INSTANCE_DISTANT, NO_REFLECTION};
 use crate::material::BlendMode;
 use crate::mesh::{MeshArena, MeshPart, VertexAttributes};
 use crate::occluders::Occluders;
@@ -87,6 +87,8 @@ pub struct Renderer {
     /// Reflection cubemaps (a cube array) and where each was taken.
     reflections: (wgpu::TextureView, Vec<Vec3>),
     materials: Vec<GpuMaterial>,
+    /// Parameters of the water materials, which index them.
+    waters: Vec<GpuWater>,
     material_passes: Vec<Pass>,
     material_alpha_tested: Vec<bool>,
     materials_dirty: bool,
@@ -96,6 +98,7 @@ pub struct Renderer {
     view_buffer: wgpu::Buffer,
     instance_buffer: GrowableBuffer,
     material_buffer: GrowableBuffer,
+    water_buffer: GrowableBuffer,
     light_buffer: GrowableBuffer,
     local_shadow_views: wgpu::Buffer,
 
@@ -108,6 +111,8 @@ pub struct Renderer {
     scene_bind_groups: Option<([wgpu::BindGroup; 2], [u32; 4])>,
     shadow_bind_group: Option<(wgpu::BindGroup, [u32; 2])>,
     light_cull_bind_group: Option<(wgpu::BindGroup, u32)>,
+    /// Built with the water buffer's generation and the targets' size.
+    water_bind_group: Option<(wgpu::BindGroup, (u32, u32, u32))>,
     tonemap_bind_group: wgpu::BindGroup,
     /// Shadow ray geometry, when the GPU traces rays; rebuilt when the
     /// shadow casters change.
@@ -120,7 +125,7 @@ pub struct Renderer {
 /// What a frame draws, worked out on the CPU before recording.
 struct FramePlan {
     /// Per pass, in drawing order.
-    draws: [Vec<Draw>; 4],
+    draws: [Vec<Draw>; 5],
     shadow_views: Vec<ShadowView>,
 }
 
@@ -180,8 +185,10 @@ impl Renderer {
             reflections: (reflection_cubes(device, queue, None), Vec::new()),
             instance_buffer: GrowableBuffer::new(device, "instances", storage, 1024 * size_of::<GpuInstance>() as u64),
             material_buffer: GrowableBuffer::new(device, "materials", storage, 256 * size_of::<GpuMaterial>() as u64),
+            water_buffer: GrowableBuffer::new(device, "waters", storage, 16 * size_of::<GpuWater>() as u64),
             light_buffer: GrowableBuffer::new(device, "lights", storage, MAX_LIGHTS as u64 * size_of::<GpuLight>() as u64),
             materials: Vec::new(),
+            waters: Vec::new(),
             material_passes: Vec::new(),
             material_alpha_tested: Vec::new(),
             materials_dirty: false,
@@ -196,6 +203,7 @@ impl Renderer {
             scene_bind_groups: None,
             shadow_bind_group: None,
             light_cull_bind_group: None,
+            water_bind_group: None,
             tonemap_bind_group,
             occluders: gpu.ray_query.then(|| Occluders::new(device)),
             occluders_dirty: true,
@@ -266,8 +274,14 @@ impl Renderer {
     }
 
     pub fn add_material(&mut self, material: &Material) -> MaterialId {
-        self.materials.push(material.into());
+        let mut gpu = GpuMaterial::from(material);
+        if let Some(water) = &material.water {
+            gpu.water = self.waters.len() as u32;
+            self.waters.push(water.into());
+        }
+        self.materials.push(gpu);
         self.material_passes.push(match material.blend {
+            _ if material.water.is_some() => Pass::Water,
             BlendMode::Opaque | BlendMode::AlphaTest if material.two_sided => Pass::OpaqueTwoSided,
             BlendMode::Opaque | BlendMode::AlphaTest => Pass::Opaque,
             BlendMode::Translucent => Pass::Translucent,
@@ -356,13 +370,15 @@ impl Renderer {
             (None, Output::Surface { .. }) => unreachable!(),
         };
 
-        let (Some((scene_bind_groups, _)), Some((shadow_bind_group, _)), Some((light_cull_bind_group, _))) = (&self.scene_bind_groups, &self.shadow_bind_group, &self.light_cull_bind_group) else {
+        let (Some((scene_bind_groups, _)), Some((shadow_bind_group, _)), Some((light_cull_bind_group, _)), Some((water_bind_group, _))) =
+            (&self.scene_bind_groups, &self.shadow_bind_group, &self.light_cull_bind_group, &self.water_bind_group)
+        else {
             unreachable!("built in prepare")
         };
         let mut encoder = self.gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") });
         self.shadow_pass.record(&self.gpu.queue, &mut encoder, shadow_bind_group, &scene_bind_groups[1], &self.meshes, &plan.shadow_views);
         self.light_cull_pass.record(&mut encoder, light_cull_bind_group);
-        self.scene_pass.record(&mut encoder, &self.targets, scene_bind_groups, &self.meshes, &plan.draws);
+        self.scene_pass.record(&mut encoder, &self.targets, scene_bind_groups, water_bind_group, &self.meshes, &plan.draws);
         self.tonemap_pass.record(&mut encoder, &output_view, &self.tonemap_bind_group);
         self.gpu.queue.submit([encoder.finish()]);
         if let Some(texture) = surface_texture {
@@ -392,6 +408,9 @@ impl Renderer {
         let (device, queue) = (&self.gpu.device, &self.gpu.queue);
         if self.materials_dirty {
             self.material_buffer.replace(device, queue, bytemuck::cast_slice(&self.materials));
+            if !self.waters.is_empty() {
+                self.water_buffer.replace(device, queue, bytemuck::cast_slice(&self.waters));
+            }
             self.materials_dirty = false;
         }
         if self.instances_dirty {
@@ -497,8 +516,8 @@ impl Renderer {
 
     /// The visible instances the view sees, per pass; alpha-tested ones last,
     /// so the depth prepass switches pipelines once.
-    fn visible(&self, frustum: &Frustum) -> [Vec<Draw>; 4] {
-        let mut draws: [Vec<Draw>; 4] = Default::default();
+    fn visible(&self, frustum: &Frustum) -> [Vec<Draw>; 5] {
+        let mut draws: [Vec<Draw>; 5] = Default::default();
         for (index, instance) in self.instances.iter().enumerate() {
             if instance.visible && frustum.intersects(&instance.bounds) {
                 draws[instance.pass as usize].push(self.draw(index, instance));
@@ -553,6 +572,10 @@ impl Renderer {
         if self.shadow_bind_group.as_ref().is_none_or(|(_, bound)| *bound != shadow_generations) {
             let bind_group = self.shadow_pass.bind_group(device, self.instance_buffer.buffer(), self.material_buffer.buffer());
             self.shadow_bind_group = Some((bind_group, shadow_generations));
+        }
+        let water = (self.water_buffer.generation(), self.width, self.height);
+        if self.water_bind_group.as_ref().is_none_or(|(_, bound)| *bound != water) {
+            self.water_bind_group = Some((self.scene_pass.water_bind_group(device, &self.targets, self.water_buffer.buffer()), water));
         }
         let lights = self.light_buffer.generation();
         if self.light_cull_bind_group.as_ref().is_none_or(|(_, bound)| *bound != lights) {

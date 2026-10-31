@@ -59,6 +59,8 @@ pub struct Material {
     pub detail: Option<Detail>,
     /// Texture scrolling, in UV units per second.
     pub scroll: Option<[f32; 2]>,
+    /// How a `water` surface looks; its ripples are the `normal` map.
+    pub water: Option<Water>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -87,6 +89,54 @@ pub struct Detail {
 impl Default for Detail {
     fn default() -> Self {
         Self { texture: String::new(), scale: 4.0, blend: DetailBlend::Modulate2x, amount: 1.0, tint: [1.0; 3] }
+    }
+}
+
+/// A water surface: what is behind it, seen through and fogged by the depth
+/// of water crossed, mixed by Fresnel with what it reflects; both distorted
+/// by the animated normal map.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Water {
+    /// Linear RGB of the water's depths.
+    pub fog_color: [f32; 3],
+    /// Distances through the water (world units) where its colour starts
+    /// hiding what is behind, and where it hides it fully.
+    pub fog_start: f32,
+    pub fog_end: f32,
+    /// Linear RGB, multiplied with what the surface reflects.
+    pub reflect_tint: [f32; 3],
+    /// Linear RGB, multiplied with what is seen through the surface.
+    pub refract_tint: [f32; 3],
+    /// How strongly the ripples distort the reflection and what is seen through.
+    pub reflect_amount: f32,
+    pub refract_amount: f32,
+    /// Normal map scrolling, UV units per second.
+    pub scroll: [f32; 2],
+    /// Two more layers of the normal map over the first, scrolling at these
+    /// speeds (UV units per second).
+    pub layers: Option<[[f32; 2]; 2]>,
+    /// Frames per second through the normal map's array layers; 0 keeps the first.
+    pub frame_rate: f32,
+    /// The surface's underside, seen from under the water: no reflection.
+    pub below: bool,
+}
+
+impl Default for Water {
+    fn default() -> Self {
+        Self {
+            fog_color: [0.03, 0.16, 0.2],
+            fog_start: 0.0,
+            fog_end: 1024.0,
+            reflect_tint: [1.0; 3],
+            refract_tint: [1.0; 3],
+            reflect_amount: 0.8,
+            refract_amount: 0.0,
+            scroll: [0.0; 2],
+            layers: None,
+            frame_rate: 0.0,
+            below: false,
+        }
     }
 }
 
@@ -126,6 +176,7 @@ impl Default for Material {
             layer2: None,
             detail: None,
             scroll: None,
+            water: None,
         }
     }
 }

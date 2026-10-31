@@ -115,9 +115,44 @@ public struct Material
     public float3 detail_tint;
     // DETAIL_*.
     public uint detail_blend;
+    // Index of its water parameters, or NO_WATER.
+    public uint water;
+    uint _pad0;
+    uint _pad1;
+    uint _pad2;
 };
 
 public static const uint NO_TEXTURE = 0xffffffff;
+public static const uint NO_WATER = 0xffffffff;
+
+public struct Water
+{
+    // The colour of the depths, and the distances through the water where
+    // it starts and ends hiding what is behind.
+    public float3 fog_color;
+    public float fog_start;
+    public float3 reflect_tint;
+    public float fog_end;
+    public float3 refract_tint;
+    // How much the ripples distort the reflection and what is seen through.
+    public float reflect_amount;
+    // Scrolling of the two extra normal map layers (xy, zw), UV units per second.
+    public float4 layer_scroll;
+    public float2 scroll;
+    public float refract_amount;
+    // Through the normal map's array layers, per second.
+    public float frame_rate;
+    // WATER_*.
+    public uint flags;
+    uint _pad0;
+    uint _pad1;
+    uint _pad2;
+};
+
+// The underside, seen from under the water.
+public static const uint WATER_BELOW = 1;
+// Two more normal map layers.
+public static const uint WATER_LAYERS = 2;
 
 public static const uint DETAIL_MODULATE_2X = 0;
 public static const uint DETAIL_ADD = 1;

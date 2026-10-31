@@ -26,7 +26,7 @@ pub use map::MapOutcome;
 
 /// Bumped whenever the converter's output changes, so that existing content
 /// is converted again.
-pub const CONVERTER_VERSION: u32 = 16;
+pub const CONVERTER_VERSION: u32 = 18;
 
 pub struct Converter {
     fs: FileSystem,

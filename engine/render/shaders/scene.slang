@@ -428,3 +428,200 @@ float4 scene_fs(VertexOut input, bool front_facing : SV_IsFrontFace) : SV_Target
     color = apply_fog(g_view, color, input.world, (input.instance_flags & INSTANCE_DISTANT) != 0, (material.flags & MATERIAL_ADDITIVE) != 0);
     return float4(color, base.a);
 }
+
+// Water, drawn after the opaque surfaces: what is behind it comes from a copy
+// of their image and depth, fogged by the depth of water crossed; what it
+// reflects is traced over that same image, or read from the nearest
+// reflection cubemap (or the sky) where the image does not show it.
+[[vk::binding(0, 2)]] Texture2D<float4> g_opaque_color;
+[[vk::binding(1, 2)]] Texture2D<float> g_opaque_depth;
+[[vk::binding(2, 2)]] StructuredBuffer<Water> g_waters;
+
+static const float INV_PI = 0.31830989;
+// How far reflections are traced over the image, world units, in how many steps.
+static const float SCREEN_TRACE_DISTANCE = 16384.0;
+static const uint SCREEN_TRACE_STEPS = 48;
+// Water shallower than this (world units) fades from reflecting to clear,
+// so that shores have no hard edge.
+static const float SHORE_DEPTH = 16.0;
+// Deep water sends back this share of what a matte surface of its colour
+// would: the rest of the light is absorbed on the way down and back.
+static const float DEPTHS_SCATTER = 0.5;
+// Roughness of the water for the sun's glints.
+static const float WATER_ROUGHNESS = 0.08;
+
+// The opaque scene's depth under a screen position (0 to 1).
+float opaque_depth(float2 uv)
+{
+    uint2 size = uint2(g_view.screen_size);
+    uint2 pixel = min(uint2(uv * g_view.screen_size), size - 1);
+    return g_opaque_depth.Load(int3(pixel, 0));
+}
+
+// How far along the view direction a depth value lies (reversed depth, no far plane).
+float view_depth(float depth)
+{
+    return depth > 0.0 ? g_view.cluster_near / depth : 1e30;
+}
+
+float3 world_at(float2 uv, float depth)
+{
+    float4 p = mul(g_view.inv_view_proj, float4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, depth, 1.0));
+    return p.xyz / p.w;
+}
+
+float2 screen_uv(float4 clip)
+{
+    return float2(clip.x / clip.w * 0.5 + 0.5, 0.5 - clip.y / clip.w * 0.5);
+}
+
+// Marches from `origin` along `dir` over the opaque scene's depth. Returns
+// where the ray meets a surface on screen (xy) and how much to trust it (z),
+// 0 when it leaves the screen or only passes behind things.
+float3 trace_screen(float3 origin, float3 dir)
+{
+    float near = g_view.cluster_near;
+    float4 start = clip_position(float4(origin, 1.0));
+    float4 end = clip_position(float4(origin + dir * SCREEN_TRACE_DISTANCE, 1.0));
+    // Stops in front of the eye.
+    if (end.w < near)
+        end = lerp(start, end, (start.w - near) / (start.w - end.w));
+    float2 a = screen_uv(start), b = screen_uv(end);
+    // 1 / depth interpolates linearly on screen.
+    float ka = 1.0 / start.w, kb = 1.0 / end.w;
+    float previous = 0.0;
+    for (uint i = 1; i <= SCREEN_TRACE_STEPS; i++)
+    {
+        float t = float(i) / float(SCREEN_TRACE_STEPS);
+        float2 uv = lerp(a, b, t);
+        if (any(uv < 0.0) || any(uv > 1.0))
+            return float3(0.0);
+        float ray = 1.0 / lerp(ka, kb, t);
+        float scene = view_depth(opaque_depth(uv));
+        // Behind a surface, by less than the thickness given to surfaces.
+        if (ray > scene && ray - scene < max(scene * 0.05, 32.0))
+        {
+            float low = previous, high = t;
+            for (uint j = 0; j < 5; j++)
+            {
+                float mid = 0.5 * (low + high);
+                if (1.0 / lerp(ka, kb, mid) > view_depth(opaque_depth(lerp(a, b, mid))))
+                    high = mid;
+                else
+                    low = mid;
+            }
+            float2 hit = lerp(a, b, high);
+            // Fades out near the screen's edges, past which the image ends.
+            float2 edge = saturate(min(hit, 1.0 - hit) * 10.0);
+            return float3(hit, edge.x * edge.y);
+        }
+        previous = t;
+    }
+    return float3(0.0);
+}
+
+float4 sample_layer(uint texture, float2 uv, float layer)
+{
+    return g_textures[NonUniformResourceIndex(texture)].Sample(g_sampler, float3(uv, layer));
+}
+
+// The ripples: a tangent-space normal (xyz) and how strongly they distort (w).
+float4 water_ripples(Material material, Water water, float2 uv)
+{
+    if (material.normal_texture == NO_TEXTURE)
+        return float4(0.0, 0.0, 1.0, 0.0);
+    uint width, height, layers, levels;
+    g_textures[NonUniformResourceIndex(material.normal_texture)].GetDimensions(0, width, height, layers, levels);
+    float time = g_view.time;
+    float layer = water.frame_rate > 0.0 ? floor(fmod(time * water.frame_rate, float(layers))) : 0.0;
+    float4 n = sample_layer(material.normal_texture, uv + frac(water.scroll * time), layer);
+    if ((water.flags & WATER_LAYERS) != 0)
+    {
+        // Two more layers, turned and rescaled so that the repeats do not line up.
+        float2 uv1 = float2(uv.x + uv.y, uv.y - uv.x) * 0.1 + frac(water.layer_scroll.xy * time);
+        float2 uv2 = uv.yx * 0.45 + frac(water.layer_scroll.zw * time);
+        n = (n + sample_layer(material.normal_texture, uv1, layer) + sample_layer(material.normal_texture, uv2, layer)) / 3.0;
+    }
+    return float4(n.xyz * 2.0 - 1.0, n.a);
+}
+
+// The colour of the water's depths, lit like a matte surface at `world` facing up.
+float3 water_depths(Water water, float3 world)
+{
+    float3 up = float3(0.0, 0.0, 1.0);
+    float3 ambient, unused;
+    if (g_view.has_probes == 0 || !probe_light(world, up, up, up, ambient, unused))
+        ambient = sky_radiance(g_view, up, false);
+    ambient += g_view.flat_ambient;
+    float sun = saturate(g_view.sun_direction.z) * sun_shadow(world, up);
+    return water.fog_color * DEPTHS_SCATTER * (ambient + g_view.sun_color * sun * INV_PI);
+}
+
+[shader("fragment")]
+float4 water_fs(VertexOut input) : SV_Target
+{
+    Material material = g_materials[input.material];
+    Water water = g_waters[material.water];
+    bool below = (water.flags & WATER_BELOW) != 0;
+    float3 to_eye = g_view.position - input.world;
+    float eye_distance = length(to_eye);
+    float3 view = to_eye / max(eye_distance, 1e-4);
+
+    float4 ripples = water_ripples(material, water, input.uv);
+    float3 geometric = normalize(input.normal);
+    float3 tangent = input.tangent.xyz - geometric * dot(input.tangent.xyz, geometric);
+    tangent = dot(tangent, tangent) > 1e-8 ? normalize(tangent) : float3(0.0);
+    float3 bitangent = cross(geometric, tangent) * input.tangent.w;
+    float3 normal = normalize(tangent * ripples.x + bitangent * ripples.y + geometric * max(ripples.z, 1e-3));
+    // Screen-space distortion.
+    float2 ripple = ripples.xy * ripples.w;
+    float2 uv = input.clip.xy / g_view.screen_size;
+
+    // What is seen through: the opaque scene behind, unless the distorted
+    // lookup lands on something in front of the water (a post standing in it).
+    float2 refract_uv = saturate(uv + ripple * water.refract_amount);
+    float behind = opaque_depth(refract_uv);
+    if (behind > input.clip.z)
+    {
+        refract_uv = uv;
+        behind = opaque_depth(uv);
+    }
+    float3 seen = g_opaque_color.SampleLevel(g_sky_sampler, refract_uv, 0.0).rgb * water.refract_tint;
+    // How much water the view crosses: to the bottom, or from below to the eye.
+    float crossed = below ? eye_distance : (behind > 0.0 ? distance(world_at(refract_uv, behind), input.world) : 1e30);
+    float fog = saturate((crossed - water.fog_start) / (water.fog_end - water.fog_start));
+    float3 color = lerp(seen, water_depths(water, input.world), fog);
+
+    if (!below)
+    {
+        // What it reflects: traced over the image along the flat surface's
+        // mirror direction, then rippled; elsewhere the cubemap or the sky.
+        float3 reflected = reflect(-view, normal);
+        float3 mirrored = input.reflection != NO_REFLECTION
+            ? g_reflections.SampleLevel(g_reflection_sampler, float4(reflected, float(input.reflection)), 0.0).rgb
+            : sky_radiance(g_view, reflected, g_view.has_sky != 0);
+        float3 hit = trace_screen(input.world, reflect(-view, geometric));
+        if (hit.z > 0.0)
+            mirrored = lerp(mirrored, g_opaque_color.SampleLevel(g_sky_sampler, saturate(hit.xy + ripple * water.reflect_amount), 0.0).rgb, hit.z);
+        mirrored *= water.reflect_tint;
+
+        float shore = saturate(crossed / SHORE_DEPTH);
+        float fresnel = 0.02 + 0.98 * pow(1.0 - saturate(dot(normal, view)), 5.0);
+        color = lerp(color, mirrored, fresnel * shore);
+
+        // The sun's glints.
+        if (dot(geometric, g_view.sun_direction) > 0.0)
+        {
+            Surface surface;
+            surface.albedo = float3(0.0);
+            surface.metallic = 0.0;
+            surface.roughness = WATER_ROUGHNESS;
+            surface.reflectance = 0.02;
+            surface.normal = normal;
+            surface.view = view;
+            color += shore * shade(surface, g_view.sun_direction, g_view.sun_color * sun_shadow(input.world, geometric));
+        }
+    }
+    color = apply_fog(g_view, color, input.world, (input.instance_flags & INSTANCE_DISTANT) != 0, false);
+    return float4(color, 1.0);
+}

@@ -223,8 +223,7 @@ impl Loader<'_> {
             ..Default::default()
         };
         if source.kind == MaterialKind::Water {
-            // Until water has its own shading: a dark, glossy, see-through surface.
-            material = Material { base_color: Vec4::new(0.05, 0.09, 0.1, 0.7), base_texture: None, normal_texture: None, detail: None, roughness: 0.05, two_sided: true, ..material };
+            material.water = Some(source.water.unwrap_or_default());
         }
         let id = self.renderer.add_material(&material);
         // The map's chosen cubemap, by its position.

@@ -59,10 +59,16 @@ impl Converter {
         let start = std::time::Instant::now();
         let mut scene = BakeScene::default();
         let geometry = &data.geometry;
+        // The 3D skybox, placed around the world like the client draws it:
+        // reflections and the sky's light see it.
+        let skybox = data.info.sky_camera.as_ref().map(|c| Mat4::from_scale(Vec3::splat(c.scale)) * Mat4::from_translation(-Vec3::from(c.origin)));
         for submesh in &geometry.submeshes {
-            if submesh.flags & (chunk_flags::SKYBOX | chunk_flags::OVERLAY) != 0 {
-                continue;
-            }
+            let transform = match (submesh.flags & chunk_flags::SKYBOX != 0, skybox) {
+                _ if submesh.flags & chunk_flags::OVERLAY != 0 => continue,
+                (false, _) => Mat4::IDENTITY,
+                (true, Some(sky)) => sky,
+                (true, None) => continue,
+            };
             let albedo = match geometry.materials[submesh.material as usize].as_str() {
                 "" => HIDDEN_ALBEDO,
                 path => match self.bake_albedo(path) {
@@ -71,16 +77,23 @@ impl Converter {
                 },
             };
             let range = submesh.first_index as usize..(submesh.first_index + submesh.index_count) as usize;
-            scene.add(&geometry.positions, &geometry.indices[range], Mat4::IDENTITY, albedo);
+            scene.add(&geometry.positions, &geometry.indices[range], transform, albedo);
         }
-        for prop in data.props.iter().filter(|p| p.flags & prop_flags::SKYBOX == 0) {
+        for prop in &data.props {
+            let in_skybox = prop.flags & prop_flags::SKYBOX != 0;
+            if in_skybox && skybox.is_none() {
+                continue;
+            }
             let path = &data.models[prop.model as usize];
             let Ok(file) = MappedFile::open(&self.out.join(path)) else { continue };
             let Ok(model) = ModelFile::read(file.bytes()) else { continue };
             let model = &model.geometry;
             let materials: Vec<&str> = model.materials().collect();
             let [pitch, yaw, roll] = prop.angles;
-            let placement = Mat4::from_scale_rotation_translation(Vec3::splat(prop.scale), Angles::new(pitch, yaw, roll).to_quat(), prop.origin.into());
+            let mut placement = Mat4::from_scale_rotation_translation(Vec3::splat(prop.scale), Angles::new(pitch, yaw, roll).to_quat(), prop.origin.into());
+            if in_skybox && let Some(sky) = skybox {
+                placement = sky * placement;
+            }
             for submesh in model.submeshes {
                 if let Some(albedo) = self.bake_albedo(materials[submesh.material as usize]) {
                     let range = submesh.first_index as usize..(submesh.first_index + submesh.index_count) as usize;

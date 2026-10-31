@@ -1,10 +1,10 @@
 //! Surface materials, metallic-roughness model.
 
 use glam::{Vec3, Vec4};
-pub use refract_asset::material::DetailBlend;
+pub use refract_asset::material::{DetailBlend, Water};
 
 use crate::TextureId;
-use crate::gpu_types::{GpuMaterial, NO_TEXTURE};
+use crate::gpu_types::{GpuMaterial, GpuWater, NO_TEXTURE, NO_WATER, WATER_BELOW, WATER_LAYERS};
 
 /// How a surface covers what is behind it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -41,6 +41,9 @@ pub struct Material {
     pub alpha_cutoff: f32,
     /// Drawn from both sides.
     pub two_sided: bool,
+    /// Shaded as water (its ripples are the normal texture), after the
+    /// opaque surfaces, whose image and depth it reads; `blend` is ignored.
+    pub water: Option<Water>,
 }
 
 impl Default for Material {
@@ -58,6 +61,7 @@ impl Default for Material {
             blend: BlendMode::Opaque,
             alpha_cutoff: 0.5,
             two_sided: false,
+            water: None,
         }
     }
 }
@@ -124,6 +128,29 @@ impl From<&Material> for GpuMaterial {
                 DetailBlend::Multiply => 4,
                 DetailBlend::Glow => 5,
             }),
+            // Set by the renderer, which owns the water buffer.
+            water: NO_WATER,
+            _pad: [0; 3],
+        }
+    }
+}
+
+impl From<&Water> for GpuWater {
+    fn from(water: &Water) -> Self {
+        let [a, b] = water.layers.unwrap_or_default();
+        GpuWater {
+            fog_color: water.fog_color,
+            fog_start: water.fog_start,
+            reflect_tint: water.reflect_tint,
+            fog_end: water.fog_end.max(water.fog_start + 1.0),
+            refract_tint: water.refract_tint,
+            reflect_amount: water.reflect_amount,
+            layer_scroll: [a[0], a[1], b[0], b[1]],
+            scroll: water.scroll,
+            refract_amount: water.refract_amount,
+            frame_rate: water.frame_rate,
+            flags: if water.below { WATER_BELOW } else { 0 } | if water.layers.is_some() { WATER_LAYERS } else { 0 },
+            _pad: [0; 3],
         }
     }
 }

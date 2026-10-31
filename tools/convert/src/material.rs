@@ -1,6 +1,6 @@
 //! Materials: VMT to `.rmat`, converting the textures they use.
 
-use refract_asset::material::{Detail, DetailBlend, Layer, Material, MaterialKind};
+use refract_asset::material::{Detail, DetailBlend, Layer, Material, MaterialKind, Water};
 use refract_formats::material::{self, MaterialInfo, parse_color, parse_number};
 
 use crate::texture::Role;
@@ -107,8 +107,55 @@ impl Converter {
             layer2,
             detail,
             scroll: None,
+            water: (kind == MaterialKind::Water).then(|| water(info)),
         }
     }
+}
+
+/// The `water` shader's parameters, and the proxies that animate its normal map.
+fn water(info: &MaterialInfo) -> Water {
+    let var = |key: &str| info.vars.get(key).map(String::as_str);
+    let number = |key: &str, default: f32| var(key).and_then(parse_number).unwrap_or(default);
+    let defaults = Water::default();
+    let fog_start = number("$fogstart", defaults.fog_start);
+    let mut water = Water {
+        fog_color: info.fog_color.unwrap_or(defaults.fog_color),
+        fog_start,
+        fog_end: number("$fogend", defaults.fog_end).max(fog_start + 1.0),
+        reflect_tint: var("$reflecttint").and_then(parse_color).unwrap_or([1.0; 3]),
+        refract_tint: var("$refracttint").and_then(parse_color).unwrap_or([1.0; 3]),
+        reflect_amount: number("$reflectamount", defaults.reflect_amount),
+        refract_amount: number("$refractamount", defaults.refract_amount),
+        below: number("$abovewater", 1.0) == 0.0,
+        ..defaults
+    };
+    // `$scroll1` with a speed along U adds two layers, scrolling at `$scroll1` and `$scroll2`.
+    let scroll1 = var("$scroll1").and_then(parse_vector2).unwrap_or([0.0; 2]);
+    if scroll1[0] != 0.0 {
+        water.layers = Some([scroll1, var("$scroll2").and_then(parse_vector2).unwrap_or([0.0; 2])]);
+    }
+    for proxy in &info.proxies {
+        let param = |key: &str| proxy.params.get(key).map(String::as_str);
+        let targets_normals = |key: &str| param(key).is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "$bumptransform" | "$normalmap" | "$bumpmap" | "$bumpframe"));
+        match proxy.name.as_str() {
+            "texturescroll" if targets_normals("texturescrollvar") => {
+                let rate = param("texturescrollrate").and_then(parse_number).unwrap_or(1.0);
+                let angle = param("texturescrollangle").and_then(parse_number).unwrap_or(0.0).to_radians();
+                water.scroll = [angle.cos() * rate, angle.sin() * rate];
+            }
+            "animatedtexture" if targets_normals("animatedtexturevar") || targets_normals("animatedtextureframenumvar") => {
+                water.frame_rate = param("animatedtextureframerate").and_then(parse_number).unwrap_or(15.0).max(0.0);
+            }
+            _ => {}
+        }
+    }
+    water
+}
+
+/// The first two numbers of `[x y ...]`.
+fn parse_vector2(value: &str) -> Option<[f32; 2]> {
+    let mut numbers = value.trim().trim_matches(|c| c == '[' || c == ']').split_whitespace().map(|n| n.parse::<f32>().ok());
+    Some([numbers.next()??, numbers.next()??])
 }
 
 impl Converter {
@@ -151,6 +198,12 @@ fn is_invisible(info: &MaterialInfo) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vectors() {
+        assert_eq!(parse_vector2("[.01 .01 .05]"), Some([0.01, 0.01]));
+        assert_eq!(parse_vector2("[1]"), None);
+    }
 
     #[test]
     fn cubemap_positions_from_names() {

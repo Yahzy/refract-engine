@@ -88,9 +88,37 @@ pub struct GpuMaterial {
     pub detail_amount: f32,
     pub detail_tint: [f32; 3],
     pub detail_blend: u32,
+    /// Index in the water buffer, or [`NO_WATER`].
+    pub water: u32,
+    pub _pad: [u32; 3],
 }
 
 pub const NO_TEXTURE: u32 = u32::MAX;
+pub const NO_WATER: u32 = u32::MAX;
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+pub struct GpuWater {
+    pub fog_color: [f32; 3],
+    pub fog_start: f32,
+    pub reflect_tint: [f32; 3],
+    pub fog_end: f32,
+    pub refract_tint: [f32; 3],
+    pub reflect_amount: f32,
+    /// The two extra normal map layers' scrolling (xy, zw).
+    pub layer_scroll: [f32; 4],
+    pub scroll: [f32; 2],
+    pub refract_amount: f32,
+    pub frame_rate: f32,
+    /// `WATER_*`.
+    pub flags: u32,
+    pub _pad: [u32; 3],
+}
+
+/// Water flag: the underside, seen from under the water.
+pub const WATER_BELOW: u32 = 1;
+/// Water flag: two more normal map layers.
+pub const WATER_LAYERS: u32 = 2;
 
 pub const LIGHT_POINT: u32 = 0;
 pub const LIGHT_SPOT: u32 = 1;
@@ -119,7 +147,8 @@ mod tests {
     fn sizes_match_the_shaders() {
         assert_eq!(size_of::<GpuView>(), 624);
         assert_eq!(size_of::<GpuInstance>(), 80);
-        assert_eq!(size_of::<GpuMaterial>(), 96);
+        assert_eq!(size_of::<GpuMaterial>(), 112);
+        assert_eq!(size_of::<GpuWater>(), 96);
         assert_eq!(size_of::<GpuLight>(), 64);
     }
 }
