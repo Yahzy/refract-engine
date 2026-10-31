@@ -1,8 +1,9 @@
 # Refract
 
 A small, modern game engine written in Rust, built to host community games: gamemodes, community servers and Lua modding.
+Inspired by Garry's Mod and the Source Engine workflow.
 
-*AI slop made it better than S&Box.*
+*Can AI Slop do better than S&Box?*
 
 ## Goals
 
