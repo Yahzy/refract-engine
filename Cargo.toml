@@ -1,0 +1,41 @@
+[workspace]
+resolver = "3"
+members = ["engine/*", "tools/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+anyhow = "1"
+thiserror = "2"
+log = "0.4"
+env_logger = "0.11"
+vpk = "0.3"
+vbsp = "0.9"
+glam = { version = "0.32", features = ["bytemuck"] }
+bytemuck = { version = "1", features = ["derive", "extern_crate_alloc"] }
+wgpu = "29.0.4"
+winit = "0.30.13"
+pollster = "0.4"
+png = "0.18"
+memmap2 = "0.9"
+ktx2 = "0.5"
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+half = "2"
+intel_tex_2 = "0.5"
+
+# Workspace crates
+refract-asset = { path = "engine/asset" }
+refract-core = { path = "engine/core" }
+refract-platform = { path = "engine/platform" }
+refract-render = { path = "engine/render" }
+refract-formats = { path = "tools/formats" }
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.dev]
+opt-level = 1

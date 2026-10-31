@@ -1,0 +1,25 @@
+[package]
+name = "refract-formats"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Content format readers for the tools: Steam/VPK/GMA filesystem, BSP, MDL, VTF, VMT"
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+log.workspace = true
+vpk.workspace = true
+vbsp.workspace = true
+serde.workspace = true
+toml.workspace = true
+texpresso = "2"
+vmdl = "0.2"
+
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55"
+
+[dev-dependencies]
+anyhow.workspace = true
+env_logger.workspace = true

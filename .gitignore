@@ -1,0 +1,8 @@
+/target
+*.log
+/game/download/
+/game/data/
+/game/cache/
+# Which installed games to read content from; local to each machine.
+/game/mount.toml
+desktop.ini

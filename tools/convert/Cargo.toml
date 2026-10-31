@@ -1,0 +1,21 @@
+[package]
+name = "refract-convert"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Converts maps, models, materials and textures (BSP, MDL, VMT, VTF, later glTF/FBX) into the engine's native formats"
+
+[[bin]]
+name = "refract-convert"
+path = "src/main.rs"
+
+[dependencies]
+refract-asset.workspace = true
+refract-core.workspace = true
+refract-render.workspace = true
+refract-formats.workspace = true
+anyhow.workspace = true
+env_logger.workspace = true
+glam.workspace = true
+intel_tex_2.workspace = true
+log.workspace = true

@@ -1,0 +1,21 @@
+[package]
+name = "refract-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The Refract game client"
+
+[[bin]]
+name = "refract"
+path = "src/main.rs"
+
+[dependencies]
+refract-asset.workspace = true
+refract-core.workspace = true
+refract-platform.workspace = true
+refract-render.workspace = true
+anyhow.workspace = true
+env_logger.workspace = true
+glam.workspace = true
+log.workspace = true
+png.workspace = true

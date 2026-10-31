@@ -1,0 +1,9 @@
+[package]
+name = "refract-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Engine foundation: math types and world conventions"
+
+[dependencies]
+glam.workspace = true

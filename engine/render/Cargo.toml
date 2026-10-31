@@ -1,0 +1,16 @@
+[package]
+name = "refract-render"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Renderer: wgpu on Vulkan, Slang shaders"
+
+[dependencies]
+refract-asset.workspace = true
+refract-core.workspace = true
+bytemuck.workspace = true
+glam.workspace = true
+log.workspace = true
+pollster.workspace = true
+thiserror.workspace = true
+wgpu.workspace = true
