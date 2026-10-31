@@ -8,7 +8,7 @@ use std::time::Instant;
 use glam::Vec2;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
-use winit::event::{DeviceEvent, DeviceId, WindowEvent};
+use winit::event::{DeviceEvent, DeviceId, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::PhysicalKey;
 use winit::window::{CursorGrabMode, Window, WindowId};
@@ -82,6 +82,7 @@ impl<A: App, F: FnOnce(Arc<Window>) -> Result<A, BoxError>> Runner<A, F> {
         let window = Arc::new(event_loop.create_window(attributes)?);
         let create = self.create.take().expect("started once");
         self.app = Some(create(window.clone()).map_err(PlatformError::App)?);
+        self.input.on_focus(window.has_focus());
         self.window = Some(window);
         self.last_frame = Instant::now();
         Ok(())
@@ -103,13 +104,18 @@ impl<A: App, F: FnOnce(Arc<Window>) -> Result<A, BoxError>> ApplicationHandler f
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => app.resized(size.width, size.height),
-            WindowEvent::Focused(false) => self.input.release_all(),
+            WindowEvent::Focused(focused) => self.input.on_focus(focused),
             WindowEvent::KeyboardInput { event, .. } => {
                 if let PhysicalKey::Code(key) = event.physical_key {
                     self.input.on_key(key, event.state, event.repeat);
                 }
             }
             WindowEvent::MouseInput { state, button, .. } => self.input.on_button(button, state),
+            WindowEvent::MouseWheel { delta, .. } => self.input.on_wheel(match delta {
+                MouseScrollDelta::LineDelta(_, y) => y,
+                // Pixels from touchpads: about one notch per 40 pixels.
+                MouseScrollDelta::PixelDelta(p) => p.y as f32 / 40.0,
+            }),
             WindowEvent::RedrawRequested => {
                 let now = Instant::now();
                 let dt = (now - self.last_frame).as_secs_f32();

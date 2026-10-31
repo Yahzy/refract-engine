@@ -7,8 +7,10 @@ use refract_core::Angles;
 
 #[derive(Debug, Default)]
 pub struct Args {
-    /// Map to load; the test scene without one.
+    /// Map to load (flown through, without collision); the playground without one.
     pub map: Option<String>,
+    /// The renderer's test scene instead of the playground.
+    pub render_test: bool,
     pub position: Option<Vec3>,
     pub angles: Option<Angles>,
     pub vsync: bool,
@@ -34,6 +36,7 @@ impl Args {
                 "+setpos" => parsed.position = Some(Vec3::new(number(next("x")?)?, number(next("y")?)?, number(next("z")?)?)),
                 "+setang" => parsed.angles = Some(Angles::new(number(next("pitch")?)?, number(next("yaw")?)?, number(next("roll")?)?)),
                 "-novsync" => parsed.vsync = false,
+                "-rendertest" => parsed.render_test = true,
                 "-noraytracing" => parsed.ray_tracing = false,
                 "--screenshot" => parsed.screenshot = Some(next("file")?),
                 "--time" => parsed.time = number(next("seconds")?)?,

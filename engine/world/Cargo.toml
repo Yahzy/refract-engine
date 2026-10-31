@@ -1,0 +1,10 @@
+[package]
+name = "refract-world"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Game simulation: collision, player movement, fixed ticks; no window, no GPU"
+
+[dependencies]
+refract-core.workspace = true
+glam.workspace = true

@@ -7,13 +7,14 @@
 //! are no reflections.
 
 use glam::{Mat4, UVec3, Vec3};
-use refract_asset::encoding::{rgb9e5, rgb9e5_decode};
+use refract_asset::encoding::{f16_bits, rgb9e5};
 use refract_asset::map::{MapData, Probe, ProbeGrid, chunk_flags, prop_flags, probe_flags};
 use refract_asset::material::{Material, MaterialKind};
-use refract_asset::{MappedFile, ModelFile, TextureData, TextureFormat};
+use refract_asset::{MappedFile, ModelFile, TextureData};
 use refract_core::Angles;
 use refract_render::Sky;
 use refract_render::gi::bake::{self, BakeInput};
+use refract_render::gi::probes;
 use refract_formats::ambient::AmbientCube;
 use refract_formats::bsp::Map;
 
@@ -26,8 +27,6 @@ const BOUNCES: u32 = 3;
 const HIDDEN_ALBEDO: [f32; 4] = [0.3, 0.3, 0.3, 0.0];
 /// Distance recorded for every direction of probes without visibility data.
 const FAR: f32 = 2048.0;
-/// Passes spreading open cells into closed ones.
-const DILATE_PASSES: usize = 3;
 /// Texels per side of a reflection cubemap face.
 const REFLECTION_SIZE: u32 = 64;
 
@@ -120,7 +119,7 @@ impl Converter {
             sky_cubemap: sky_texture.as_ref(),
         };
         let mut baked = bake::bake(&input)?;
-        fill_closed(&mut baked.probes, UVec3::from(grid.resolution));
+        probes::fill_closed(&mut baked.probes, grid.resolution);
         let valid = baked.probes.iter().filter(|p| p.flags & probe_flags::VALID != 0).count();
         log::info!(
             "baked {} probes ({valid} in open space) and {} reflections over {} triangles in {:.1} s",
@@ -134,7 +133,7 @@ impl Converter {
             None
         } else {
             let path = format!("maps/{}.reflections.ktx2", data.info.name.to_ascii_lowercase());
-            self.write(&path, &cube_array(&baked.reflections, reflection_positions.len() as u32).write())?;
+            self.write(&path, &probes::reflection_cubemaps(&baked.reflections, reflection_positions.len() as u32, REFLECTION_SIZE).write())?;
             Some((reflection_positions.iter().map(|p| p.extend(0.0).to_array()).collect(), path))
         };
         Ok(BakedLight { probes: Some((grid, baked.probes)), reflections })
@@ -153,34 +152,6 @@ impl Converter {
         let thin = material.two_sided || material.kind == MaterialKind::AlphaTest;
         Some([r, g, b, if thin { 1.0 } else { 0.0 }])
     }
-}
-
-/// Baked reflection texels as a cube array with every mip (each a 2x2 box
-/// filter of the one above), half floats.
-fn cube_array(texels: &[[f32; 4]], count: u32) -> TextureData<'static> {
-    let mut level: Vec<[f32; 4]> = texels.to_vec();
-    let mut size = REFLECTION_SIZE;
-    let mut mips = Vec::new();
-    loop {
-        mips.push(std::borrow::Cow::Owned(level.iter().flat_map(|t| t.map(|c| f16_bits(c).to_le_bytes())).flatten().collect::<Vec<u8>>()));
-        if size == 1 {
-            break;
-        }
-        let half = size / 2;
-        let mut next = Vec::with_capacity((count * 6 * half * half) as usize);
-        for image in level.chunks_exact((size * size) as usize) {
-            for y in 0..half {
-                for x in 0..half {
-                    let at = |dx: u32, dy: u32| image[((y * 2 + dy) * size + x * 2 + dx) as usize];
-                    let (a, b, c, d) = (at(0, 0), at(1, 0), at(0, 1), at(1, 1));
-                    next.push(std::array::from_fn(|k| (a[k] + b[k] + c[k] + d[k]) * 0.25));
-                }
-            }
-        }
-        level = next;
-        size = half;
-    }
-    TextureData { format: TextureFormat::Rgba16Float, width: REFLECTION_SIZE, height: REFLECTION_SIZE, layers: count, faces: 6, mips }
 }
 
 /// Triangles for the bake, in world space, with one albedo each.
@@ -218,11 +189,7 @@ fn grid_over(data: &MapData) -> Option<ProbeGrid> {
         .map(|&i| Vec3::from(geometry.positions[i as usize]));
     let first = points.next()?;
     let (min, max) = points.fold((first, first), |(min, max), p| (min.min(p), max.max(p)));
-    let size = (max - min).max(Vec3::splat(1.0));
-    let cell = (size.x * size.y * size.z / MAX_PROBES).cbrt().max(MIN_CELL);
-    let resolution = (size / cell).ceil().as_uvec3().max(UVec3::ONE);
-    let origin = (min + max) * 0.5 - resolution.as_vec3() * cell * 0.5;
-    Some(ProbeGrid { origin: origin.to_array(), cell_size: cell, resolution: resolution.to_array(), _pad: 0 })
+    Some(probes::grid_around(min, max, MIN_CELL, MAX_PROBES))
 }
 
 /// Probes from the map's own ambient cubes, without visibility data. Cells
@@ -244,96 +211,11 @@ fn resample(map: &Map, grid: ProbeGrid) -> Vec<Probe> {
     .flatten()
     .collect();
     let far = f16_bits(FAR);
-    dilate(cells, resolution)
+    probes::dilate(cells, grid.resolution)
         .into_iter()
         .map(|cube| match cube {
             Some(cube) => Probe { light: cube.map(rgb9e5), distance: [far; 6], flags: probe_flags::VALID },
             None => Probe::default(),
         })
         .collect()
-}
-
-/// Gives probes inside walls the light of their open neighbours. They stay
-/// marked closed: surfaces only use them where no open probe is near (thin
-/// gaps, small rooms), which would otherwise have no light at all.
-fn fill_closed(probes: &mut [Probe], resolution: UVec3) {
-    let cells = probes.iter().map(|p| (p.flags & probe_flags::VALID != 0).then(|| p.light.map(rgb9e5_decode))).collect();
-    for (probe, cube) in probes.iter_mut().zip(dilate(cells, resolution)) {
-        if let Some(cube) = cube
-            && probe.flags & probe_flags::VALID == 0
-        {
-            probe.light = cube.map(rgb9e5);
-        }
-    }
-}
-
-/// `value` as half-float bits (positive, finite values).
-fn f16_bits(value: f32) -> u16 {
-    let bits = value.to_bits();
-    let exponent = ((bits >> 23) & 0xff) as i32 - 127 + 15;
-    if exponent <= 0 {
-        return 0;
-    }
-    if exponent >= 31 {
-        return 0x7bff;
-    }
-    ((exponent as u16) << 10) | ((bits >> 13) & 0x3ff) as u16
-}
-
-/// Fills empty cells with the average of their filled neighbours, a few times over.
-fn dilate(mut cells: Vec<Option<AmbientCube>>, resolution: UVec3) -> Vec<Option<AmbientCube>> {
-    let r = resolution.as_ivec3();
-    let index = |x: i32, y: i32, z: i32| (x + r.x * (y + r.y * z)) as usize;
-    for _ in 0..DILATE_PASSES {
-        let previous = cells.clone();
-        for z in 0..r.z {
-            for y in 0..r.y {
-                for x in 0..r.x {
-                    if previous[index(x, y, z)].is_some() {
-                        continue;
-                    }
-                    let mut sum = [[0.0f32; 3]; 6];
-                    let mut count = 0.0;
-                    for (dx, dy, dz) in [(1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)] {
-                        let (nx, ny, nz) = (x + dx, y + dy, z + dz);
-                        if nx < 0 || ny < 0 || nz < 0 || nx >= r.x || ny >= r.y || nz >= r.z {
-                            continue;
-                        }
-                        if let Some(cube) = previous[index(nx, ny, nz)] {
-                            for face in 0..6 {
-                                for k in 0..3 {
-                                    sum[face][k] += cube[face][k];
-                                }
-                            }
-                            count += 1.0;
-                        }
-                    }
-                    if count > 0.0 {
-                        cells[index(x, y, z)] = Some(sum.map(|face| face.map(|c| c / count)));
-                    }
-                }
-            }
-        }
-    }
-    cells
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn dilation_fills_neighbours_only() {
-        let lit: AmbientCube = [[1.0; 3]; 6];
-        let cells = vec![Some(lit), None, None, None, None];
-        let filled = dilate(cells, UVec3::new(5, 1, 1));
-        assert!(filled[1].is_some() && filled[3].is_some());
-        assert!(filled[4].is_none(), "beyond {DILATE_PASSES} passes");
-    }
-
-    #[test]
-    fn half_floats() {
-        assert_eq!(f16_bits(2048.0), 0x6800);
-        assert_eq!(f16_bits(1.0), 0x3c00);
-    }
 }

@@ -7,6 +7,7 @@
 use std::borrow::Cow;
 
 use glam::{Vec2, Vec3};
+use refract_asset::encoding::f16_bits;
 use refract_asset::{TextureData, TextureFormat};
 use refract_render::Sky;
 use refract_formats::bsp::{Map, MapEntity};
@@ -152,19 +153,6 @@ fn sample_skybox(faces: &[Texture; 6], dir: Vec3) -> Vec3 {
 
 fn srgb_to_linear(c: f32) -> f32 {
     if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
-}
-
-/// `value` as half-float bits.
-fn f16_bits(value: f32) -> u16 {
-    let bits = value.max(0.0).to_bits();
-    let exponent = ((bits >> 23) & 0xff) as i32 - 127 + 15;
-    if exponent <= 0 {
-        return 0;
-    }
-    if exponent >= 31 {
-        return 0x7bff;
-    }
-    ((exponent as u16) << 10) | ((bits >> 13) & 0x3ff) as u16
 }
 
 /// `env_skypaint` settings, with the entity's default values.

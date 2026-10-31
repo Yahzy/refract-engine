@@ -1,26 +1,34 @@
 //! The Refract client.
 //!
-//! refract [+map <name>] [+setpos x y z] [+setang pitch yaw roll] [-novsync] [-noraytracing]
+//! refract [+map <name>] [+setpos x y z] [+setang pitch yaw roll] [-rendertest]
+//!         [-novsync] [-noraytracing]
 //!         [--screenshot <file.png>] [--size WIDTHxHEIGHT] [--time <seconds>]
 //!         [--bench <frames>]
+//!
+//! Without a map, the playground, played on foot (see `player.rs`). Maps and
+//! the render test scene are flown through (see `flycam.rs`).
 
 mod args;
 mod flycam;
+mod level;
 mod map;
+mod player;
+mod playground;
 mod scene;
 mod test_scene;
+mod textures;
 
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Context;
-use refract_platform::{App, BoxError, Input, KeyCode, Window, WindowConfig};
+use refract_platform::{App, BoxError, Input, KeyCode, MouseButton, Window, WindowConfig};
 use refract_render::{Camera, Renderer, RendererConfig};
 
 use args::Args;
+use player::LocalPlayer;
 use scene::Scene;
-use test_scene::TestScene;
 
 /// The game folder: content found there is mounted first, and converted
 /// content goes into its `cache/content`.
@@ -43,19 +51,39 @@ fn main() -> anyhow::Result<()> {
 struct Client {
     renderer: Renderer,
     scene: Scene,
-    camera: Camera,
+    control: Control,
     start: Instant,
     mouse_captured: bool,
     fps: FpsCounter,
+}
+
+/// Who moves the camera.
+enum Control {
+    Player(Box<LocalPlayer>),
+    Fly(Camera),
 }
 
 impl Client {
     fn new(window: Arc<Window>, args: &Args) -> Result<Self, BoxError> {
         let size = window.inner_size();
         let mut renderer = Renderer::with_surface(window, size.width, size.height, RendererConfig { vsync: args.vsync, ray_tracing: args.ray_tracing })?;
-        let scene = load_scene(&mut renderer, args)?;
+        let mut scene = load_scene(&mut renderer, args)?;
         let camera = initial_camera(&scene, args);
-        Ok(Self { renderer, scene, camera, start: Instant::now(), mouse_captured: false, fps: FpsCounter::default() })
+        let control = match scene.collision.take() {
+            Some(world) => {
+                let origin = args.position.unwrap_or(playground::SPAWN);
+                Control::Player(Box::new(LocalPlayer::new(world, origin, camera.angles.yaw)))
+            }
+            None => Control::Fly(camera),
+        };
+        Ok(Self { renderer, scene, control, start: Instant::now(), mouse_captured: false, fps: FpsCounter::default() })
+    }
+
+    fn capture(&mut self, window: &Window, captured: bool) {
+        if captured != self.mouse_captured {
+            refract_platform::capture_cursor(window, captured);
+            self.mouse_captured = captured;
+        }
     }
 }
 
@@ -65,24 +93,46 @@ impl App for Client {
     }
 
     fn frame(&mut self, window: &Window, input: &Input, dt: f32) -> bool {
-        if input.key_pressed(KeyCode::Escape) {
-            return false;
-        }
-        let looking = flycam::looking(input);
-        if looking != self.mouse_captured {
-            refract_platform::capture_cursor(window, looking);
-            self.mouse_captured = looking;
-        }
-        flycam::update(&mut self.camera, input, dt);
+        let camera = match &mut self.control {
+            Control::Fly(camera) => {
+                if input.key_pressed(KeyCode::Escape) {
+                    return false;
+                }
+                flycam::update(camera, input, dt);
+                let camera = *camera;
+                self.capture(window, flycam::looking(input));
+                camera
+            }
+            Control::Player(_) => {
+                // Escape frees the mouse, then quits; a click takes it back.
+                if input.key_pressed(KeyCode::Escape) {
+                    if !self.mouse_captured {
+                        return false;
+                    }
+                    self.capture(window, false);
+                } else if !input.focused() {
+                    self.capture(window, false);
+                } else if input.button_down(MouseButton::Left) {
+                    self.capture(window, true);
+                }
+                let Control::Player(player) = &mut self.control else { unreachable!() };
+                player.update(input, self.mouse_captured, dt);
+                player.camera()
+            }
+        };
 
         let time = self.start.elapsed().as_secs_f32();
         self.scene.update(&mut self.renderer, time);
-        if let Err(err) = self.renderer.render(&self.scene.frame(self.camera, time)) {
+        if let Err(err) = self.renderer.render(&self.scene.frame(camera, time)) {
             log::error!("render: {err}");
             return false;
         }
         if let Some(fps) = self.fps.tick(dt) {
-            window.set_title(&format!("Refract — {fps:.0} FPS ({:.2} ms)", 1000.0 / fps));
+            let speed = match &self.control {
+                Control::Player(player) => format!(" — {:.0} u/s", player.speed()),
+                Control::Fly(_) => String::new(),
+            };
+            window.set_title(&format!("Refract — {fps:.0} FPS ({:.2} ms){speed}", 1000.0 / fps));
         }
         true
     }
@@ -91,7 +141,8 @@ impl App for Client {
 fn load_scene(renderer: &mut Renderer, args: &Args) -> anyhow::Result<Scene> {
     match &args.map {
         Some(name) => map::load(renderer, Path::new(GAME_DIR), name),
-        None => Ok(TestScene::build(renderer)),
+        None if args.render_test => Ok(test_scene::build(renderer)),
+        None => Ok(playground::build(renderer)),
     }
 }
 

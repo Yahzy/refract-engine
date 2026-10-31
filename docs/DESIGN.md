@@ -21,9 +21,9 @@ refract/
 │  ├─ core/            refract-core      maths (glam), repère et unités, angles ✅
 │  ├─ platform/        refract-platform  fenêtre, boucle, entrées (winit) ✅
 │  ├─ render/          refract-render    rendu wgpu + shaders Slang (shaders/*.slang, shaders/lib/) ✅
-│  ├─ client/          binaire `refract` : maps converties ou scène de test, caméra libre ✅
+│  ├─ client/          binaire `refract` : terrain de jeu à pied ; maps converties et scène de test en caméra libre ✅
 │  ├─ asset/           refract-asset     format natif : définition, écriture, lecture (mmap) ✅
-│  └─ world/           refract-world     entités + simulation à tick fixe, sans fenêtre ni GPU
+│  └─ world/           refract-world     collisions, mouvement du joueur, ticks fixes, sans fenêtre ni GPU ✅ (entités à venir)
 │     plus tard : physics/, net/, script/ (LuaJIT), audio/, server/ (binaire dédié)
 ├─ tools/              ce qui prépare le contenu, hors du jeu
 │  ├─ formats/         refract-formats   lecteurs de formats : VFS Steam/VPK/GMA, BSP, MDL, VTF, VMT, KeyValues
@@ -54,7 +54,8 @@ Les crates d'`engine/` sont créées au fur et à mesure de leur premier code, p
 | Unités | **1 unité = 1 pouce** | Pas de conversion des maps importées, valeurs familières aux moddeurs ; la précision relative des flottants ne dépend pas de l'échelle. Les imports glTF/FBX (en mètres) sont mis à l'échelle par le convertisseur, la physique convertit à sa frontière si besoin |
 | Scripting | `mlua` + **LuaJIT**, sandboxé | Rapide et connu des moddeurs ; le code des serveurs s'exécute chez les joueurs |
 | Maths | `glam` | Standard de l'écosystème |
-| Physique | à choisir (`rapier3d`, Jolt…) | Plus tard |
+| Collisions du joueur | **maison** : brushes convexes, balayage d'une boîte | Le modèle qui donne marches, glisse sur les pentes et surf exactement ; c'est aussi la forme des volumes des maps converties |
+| Physique des objets | à choisir (`rapier3d`, Jolt…) | Plus tard |
 | Réseau | à choisir (UDP, snapshots + delta) | Plus tard |
 | Formats d'import | BSP, VMF, MDL, VTF, VMT, **glTF** d'abord, FBX ensuite (`ufbx`) | glTF est le standard ouvert ; FBX est propriétaire et complexe |
 
@@ -84,7 +85,8 @@ VMF ────────────────────┘        ▲
   - par sonde : un ambient cube, la distance libre moyenne dans les 6 directions, et « valide » si moins d'un quart des rayons touchent des faces arrière (sinon la sonde est dans un mur). Les surfaces fines (double face ou alpha test : feuillages, grillages) sont éclairées des deux côtés et leur dos ne compte pas comme une face arrière, sinon les sondes dans les arbres seraient « dans un mur » ;
   - les sondes dans les murs reçoivent ensuite la lumière de leurs voisines valides (3 passes de dilatation), tout en restant marquées non valides ;
   - petite map : 2 M sondes en 0,7 s ; grande map de ville : 2 M sondes sur 3,7 M triangles en 1,7 s (RTX 4070 Ti SUPER) ;
-  - sans GPU capable de lancer des rayons, la même grille est remplie avec les ambient cubes du BSP (sans visibilité, cellules vides comblées par leurs voisines).
+  - sans GPU capable de lancer des rayons, la même grille est remplie avec les ambient cubes du BSP (sans visibilité, cellules vides comblées par leurs voisines) ;
+  - le dimensionnement de la grille, la dilatation et l'empaquetage des cubemaps (`gi::probes`) servent aussi au client, qui cuit les niveaux construits en code au lancement.
 - **Ciel** : converti en cubemap HDR (`Rgba16Float`, 256² par face) aux conventions du moteur (échantillonnée avec une direction du monde) : le ciel peint (`skyname painted` / `env_skypaint`, sa formule évaluée pour chaque texel, couche d'étoiles ou de nuages au repos) ou les six textures de la skybox rééchantillonnées. Affiché à 1,5×. Pour le bake, la lumière du ciel est résumée en dégradé zénith / horizon / sol : chacun est la lumière que reçoit une surface tournée dans ce sens (moyenne pondérée par le cosinus sur la moitié du ciel qu'elle voit), avec la **couleur de l'ambiant de la map** (`_ambient`) ramenée à mi-chemin du gris : les textures de ciel sont bien trop bleues pour éclairer et donnaient des ombres bleu marine, et l'ambiant seul les laisse encore nettement bleues là où seul le ciel éclaire. Hors des sondes, le moteur prend 40 % du texel du ciel vu selon la normale.
 - **Reflets (cubemaps)** : aux positions des `env_cubemap` de la map, le baker trace aussi des cubemaps (64² par face, un rayon par texel) : un impact est éclairé comme dans le bake des sondes (soleil, lumières, sondes finies) avec l'albédo moyen de son matériau ; sans impact, la cubemap du ciel. Stockées en tableau de cubemaps KTX2 `Rgba16Float` avec tous leurs mips (filtre 2×2). Les matériaux à `$envmap` deviennent lisses (rugosité 0,2) et plus réfléchissants (`reflectance`, F0 selon `$envmaptint`) ; seuls eux reflètent une cubemap, les autres gardent le spéculaire des sondes. Chaque face du monde reflète la cubemap que la map lui a attribuée (son matériau dérivé nomme `maps/<map>/c<x>_<y>_<z>`), les props la plus proche. Le niveau de mip suit la rugosité.
 - **Rendu des sondes** : storage buffer lu par le shader ; pour chaque pixel, les 8 sondes voisines, lues une seule fois pour le diffus (selon la normale) et le spéculaire (selon la réflexion), pondérées par la trilinéaire, la validité (une sonde dans un mur ne compte presque pas : seulement quand aucune sonde valide n'est proche, interstices et petites pièces), l'orientation (sonde derrière la surface) et la visibilité (la sonde voit-elle jusqu'à la surface ? coupure progressive sur une demi-cellule, une coupure nette dessinait des cercles), ce qui évite les fuites de lumière à travers les murs. Hors de la grille (skybox 3D), le ciel. Un ambiant plat gris (10 % de la luminance de l'`_ambient`) s'y ajoute partout. La même grille pourra plus tard être mise à jour en temps réel (façon DDGI).
@@ -117,6 +119,25 @@ Le réseau n'est pas codé tout de suite, mais tout est préparé pour lui :
 - **`world` sans fenêtre ni GPU**, pour qu'un serveur dédié headless soit un simple autre binaire ;
 - **identifiants d'entités stables** et sérialisables, pour les snapshots réseau ;
 - **serveur autoritaire** : le client enverra ses commandes, prédira son propre mouvement, et le serveur tranchera.
+
+### Joueur et collisions (`refract-world`)
+
+- **Collisions** : le monde solide est une liste de **brushes** convexes (intersections de demi-espaces). Le joueur est une boîte alignée sur les axes (32 × 32 × 72, 36 de haut accroupi), dont l'origine est le centre du dessous. Balayer une boîte contre un brush revient à balayer un point contre le brush grossi par la boîte, encore borné par des plans : ceux du brush repoussés du coin de la boîte le plus enfoncé, plus des plans **biseaux** (les directions des faces de la boîte, et les arêtes de la boîte croisées avec celles du brush, là où ce plan ne fait que toucher le brush), calculés une fois à la création du brush. Un balayage découpe donc un segment par une poignée de plans, s'arrête à 1/32 d'unité avant la surface, et dit s'il part ou reste dans un solide. Les boîtes englobantes écartent les brushes loin du trajet (pas encore de structure spatiale : inutile pour quelques centaines de brushes).
+- **Mouvement** (`Player::step`, un tick par commande) : la commande donne les angles de vue, les axes avant/côté/haut et les boutons (saut, accroupi, course, marche lente). Dans l'ordre : accroupi ; demi-gravité ; saut (seulement sur un nouvel appui, sauf `auto_jump` ; s'ajoute à la vitesse verticale, la remplace accroupi, et termine aussitôt la gravité de ce tick) ; au sol, friction puis accélération et déplacement ; en l'air, accélération aérienne et glissement ; état du sol ; seconde demi-gravité (intégration exacte d'une accélération constante).
+  - **sol** : friction proportionnelle à la vitesse (au moins `stop_speed`), accélération vers la vitesse voulue ; le déplacement essaie le trajet droit, sinon à la fois le glissement à plat et le même glissement surélevé d'une marche (18 unités) puis redescendu, et garde le plus long ; ensuite il colle au sol qui descend de moins d'une marche (escaliers descendus sans décoller) ;
+  - **air** : l'accélération ajoute de la vitesse le long de la direction voulue jusqu'à 30 seulement (avec le taux de la vitesse voulue entière) : on dirige sans propulser, mais en tournant pendant un strafe chaque tick trouve une nouvelle direction où ajouter 30, d'où l'**air strafe** et le **bunny hop** (sauter au tick d'atterrissage saute la friction) ;
+  - **glissement** : jusqu'à 4 rebonds ; la vitesse perd sa part dans chaque surface touchée, glisse le long du pli entre deux surfaces, s'arrête dans un coin ; une pente trop raide (normale à moins de 0,7 de hauteur, environ 45°) n'est pas du sol : on y glisse comme en l'air, ce qui donne le **surf**. Un balayage arrêté avant d'avoir bougé (l'arrondi a laissé la boîte plus près de la surface que les 1/32 d'unité gardés) écarte la boîte de ces 1/32 le long de la normale : sinon chaque balayage suivant le long de la surface s'arrête aussi, et après 4 la vitesse tombe à zéro (le joueur restait collé aux rampes de surf) ;
+  - **sol ou pas** : une boîte balayée de 2 unités vers le bas ; monter à plus de 140 unités/s décolle ; poussé vers le haut contre une pente trop raide, l'accélération et le contrôle en l'air tombent à 25 % ;
+  - **accroupi** : au sol, la vue descend en 0,2 s puis la boîte rétrécit par le haut ; en l'air, la boîte rétrécit aussitôt par le bas (les pieds remontent de 36 : le saut accroupi monte plus haut) ; se relever demande de la place ;
+  - **crouch** au sol seulement : la vitesse réduite ne s'applique pas en l'air ;
+  - **noclip** : vol à travers tout, à vitesse fixe selon la vue (500, ×3 en courant, ×0,1 accroupi, Espace pour monter), sans accélération ni friction : relâcher arrête net ; la vitesse n'est pas remise à zéro en entrant ou en sortant du noclip, on repart donc avec l'élan du vol.
+- **Valeurs** (`MoveSettings`, ajustables) : gravité 600, friction 8, `stop_speed` 10, accélération 10 au sol comme en l'air, 30 en l'air, marche 200, course 400, marche lente 100, accroupi ×0,3, saut à 200 unités/s (33 unités de haut), marche 18, vue à 64 (28 accroupi).
+- **Ticks** : 66,67 par seconde (`TickClock` accumule le temps des images, rattrape au plus 0,25 s). Le client interpole la position des yeux entre les deux derniers ticks, et lisse les marches (la vue rattrape la hauteur en ~0,06 s au lieu de sauter de 18 unités).
+- **Client** : la souris tourne la vue à chaque image (0,066° par compte), les touches sont lues à chaque tick ; un appui sur Espace ou un cran de molette attend le tick suivant (sauter à la molette). Échap libère la souris, puis quitte ; un clic la reprend.
+
+### Terrain de jeu (`engine/client/src/playground.rs`)
+
+Le niveau chargé sans `+map` : construit en code avec des brushes, qui donnent à la fois les collisions, la géométrie dessinée (textures projetées selon l'axe principal de chaque face, 256 unités par répétition) et ce que trace le baker. Textures générées en code : une grille (cellules de 16, dalles de 64) et le relief des dalles en normal map. Au lancement, le baker GPU cuit les sondes (cellules de 32 unités, ~180 000 sondes, 3 rebonds) et 6 cubemaps de reflet, en 0,2 à 0,3 s ; sans GPU capable de lancer des rayons, le ciel seul éclaire. Zones : escaliers, marches trop hautes, rampes de 30° et 55°, caisses de 32 à 80 de haut ; rampe de surf à 60° sous une plateforme à 384 ; plateformes à sauter au-dessus d'un sol lumineux ; hall couvert aux lumières colorées avec tunnel à franchir accroupi ; vitrine de matériaux (sphères de rugosité et métal, piliers d'acier, d'or et de cuivre, sol noir brillant, lumières en orbite avec ombres).
 
 ### Rendu (`refract-render`)
 
@@ -161,7 +182,7 @@ Mesures (scène de départ, 1280×720, `--bench`) : petite map 0,3 ms de CPU et 
 4. **`refract-convert`** : BSP → format natif ; le client charge les maps converties. ✅
 5. **Nouveau rendu** jusqu'à la parité avec l'ancien visualiseur par captures (liste en §5).
 6. **Import VMF** + rechargement en direct, puis **baker d'éclairage GPU**.
-7. **Couche jeu** : `world` (entités, tick), physique, LuaJIT, puis réseau et serveur dédié.
+7. **Couche jeu** : `world` (entités, tick), physique, LuaJIT, puis réseau et serveur dédié. Commencée le 2026-10-31, rendu mis en pause : joueur au mouvement complet sur le terrain de jeu.
 8. **Plateforme** (section 7).
 
 ## 7. Pistes pour la couche jeu et la plateforme

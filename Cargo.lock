@@ -1927,6 +1927,7 @@ dependencies = [
  "refract-core",
  "refract-platform",
  "refract-render",
+ "refract-world",
 ]
 
 [[package]]
@@ -1990,6 +1991,14 @@ dependencies = [
  "refract-core",
  "thiserror 2.0.21",
  "wgpu",
+]
+
+[[package]]
+name = "refract-world"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "refract-core",
 ]
 
 [[package]]

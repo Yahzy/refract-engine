@@ -14,6 +14,7 @@ refract-asset.workspace = true
 refract-core.workspace = true
 refract-platform.workspace = true
 refract-render.workspace = true
+refract-world.workspace = true
 anyhow.workspace = true
 env_logger.workspace = true
 glam.workspace = true

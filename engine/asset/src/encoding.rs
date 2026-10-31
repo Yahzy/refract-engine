@@ -20,6 +20,20 @@ pub fn oct_decode(e: [i16; 2]) -> Vec3 {
     Vec3::new(xy.x, xy.y, z).normalize()
 }
 
+/// `value` as half-float bits; negative values become 0, values too large
+/// the largest half float.
+pub fn f16_bits(value: f32) -> u16 {
+    let bits = value.max(0.0).to_bits();
+    let exponent = ((bits >> 23) & 0xff) as i32 - 127 + 15;
+    if exponent <= 0 {
+        return 0;
+    }
+    if exponent >= 31 {
+        return 0x7bff;
+    }
+    ((exponent as u16) << 10) | ((bits >> 13) & 0x3ff) as u16
+}
+
 pub fn snorm16(v: f32) -> i16 {
     (v.clamp(-1.0, 1.0) * 32767.0).round() as i16
 }

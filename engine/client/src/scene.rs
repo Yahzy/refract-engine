@@ -1,10 +1,12 @@
-//! What the client shows: the lighting of the loaded map (or test scene) and
-//! where the player starts. Geometry and materials live in the renderer.
+//! What the client shows: the lighting of the loaded level, its solid
+//! geometry when it has some, and where the player starts. Geometry and
+//! materials live in the renderer.
 
-use glam::Vec3;
-use refract_render::{Camera, Fog, Frame, PointLight, Renderer, Sky, SpotLight, Sun};
+use std::f32::consts::TAU;
 
-use crate::test_scene::TestScene;
+use glam::{Mat4, Vec3};
+use refract_render::{Camera, Fog, Frame, InstanceId, PointLight, Renderer, Sky, SpotLight, Sun};
+use refract_world::Collision;
 
 pub struct Scene {
     pub spawn: Camera,
@@ -12,26 +14,67 @@ pub struct Scene {
     pub sky: Sky,
     pub ambient: Vec3,
     pub exposure: f32,
+    /// Lights that stay in place.
     pub point_lights: Vec<PointLight>,
     pub spot_lights: Vec<SpotLight>,
+    /// Lights circling around, added to `point_lights` each frame.
+    pub orbits: Vec<Orbit>,
     pub fog: Option<Fog>,
-    /// Animates the test scene's lights.
-    pub test: Option<TestScene>,
+    /// What players collide with; none for levels only flown through.
+    pub collision: Option<Collision>,
+    /// `point_lights` and the orbiting lights at the current time.
+    lights: Vec<PointLight>,
+}
+
+/// A light circling around a point, with the emissive marker showing where it is.
+pub struct Orbit {
+    pub center: Vec3,
+    pub radius: f32,
+    /// Turns per second.
+    pub speed: f32,
+    pub phase: f32,
+    pub color: Vec3,
+    pub intensity: f32,
+    pub range: f32,
+    pub marker: InstanceId,
 }
 
 impl Scene {
-    pub fn update(&mut self, renderer: &mut Renderer, time: f32) {
-        if let Some(test) = &mut self.test {
-            test.update(renderer, time, &mut self.point_lights);
+    pub fn new(spawn: Camera, sun: Sun) -> Self {
+        Self {
+            spawn,
+            sun,
+            sky: default_sky(),
+            ambient: Vec3::ZERO,
+            exposure: 1.0,
+            point_lights: Vec::new(),
+            spot_lights: Vec::new(),
+            orbits: Vec::new(),
+            fog: None,
+            collision: None,
+            lights: Vec::new(),
         }
     }
 
+    /// Moves the orbiting lights and their markers to where they are at `time`.
+    pub fn update(&mut self, renderer: &mut Renderer, time: f32) {
+        self.lights.clear();
+        self.lights.extend_from_slice(&self.point_lights);
+        for orbit in &self.orbits {
+            let angle = (orbit.phase + time * orbit.speed) * TAU;
+            let position = orbit.center + Vec3::new(angle.cos(), angle.sin(), 0.0) * orbit.radius;
+            self.lights.push(PointLight { position, color: orbit.color, intensity: orbit.intensity, range: orbit.range, casts_shadows: true, clearance: 0.0 });
+            renderer.set_transform(orbit.marker, Mat4::from_translation(position));
+        }
+    }
+
+    /// Call [`Scene::update`] first.
     pub fn frame(&self, camera: Camera, time: f32) -> Frame<'_> {
         Frame {
             camera,
             sun: self.sun,
             sky: self.sky,
-            point_lights: &self.point_lights,
+            point_lights: &self.lights,
             spot_lights: &self.spot_lights,
             ambient: self.ambient,
             exposure: self.exposure,

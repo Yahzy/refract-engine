@@ -15,7 +15,7 @@ use refract_asset::{MappedFile, ModelFile, TextureData, entities};
 use refract_core::Angles;
 use refract_render::{BlendMode, Camera, Detail, Fog, Layer, Material, MaterialId, MeshId, MeshPart, PointLight, ProbeGrid, Renderer, Sphere, SpotLight, Sun, TextureId};
 
-use crate::scene::{Scene, default_sky};
+use crate::scene::Scene;
 
 /// Share of the flat ambient light kept where baked probes light the map,
 /// grey: it is all that lights rooms without lamps, which the map's ambient
@@ -118,27 +118,20 @@ impl Loader<'_> {
             self.renderer.set_sky(None);
         }
 
-        let mut scene = Scene {
-            spawn: spawn(map.entities),
-            sun: map.info.sun.as_ref().map_or(Sun { direction: -Vec3::Z, color: Vec3::ONE, intensity: 0.0 }, |s| Sun { direction: s.direction.into(), color: s.color.into(), intensity: s.intensity }),
-            sky: default_sky(),
-            ambient: match grid {
-                Some(_) => Vec3::splat(Vec3::from(map.info.ambient).dot(Vec3::new(0.2126, 0.7152, 0.0722)) * BAKED_AMBIENT_FLOOR),
-                None => Vec3::from(map.info.ambient),
-            },
-            exposure: 1.0,
-            point_lights: Vec::new(),
-            spot_lights: Vec::new(),
-            fog: map.info.fog.as_ref().map(|f| Fog {
-                color: f.color.into(),
-                density: f.density,
-                height: f.height,
-                falloff: f.falloff,
-                max_opacity: f.max_opacity,
-                sky_density: f.sky_density,
-            }),
-            test: None,
+        let sun = map.info.sun.as_ref().map_or(Sun { direction: -Vec3::Z, color: Vec3::ONE, intensity: 0.0 }, |s| Sun { direction: s.direction.into(), color: s.color.into(), intensity: s.intensity });
+        let mut scene = Scene::new(spawn(map.entities), sun);
+        scene.ambient = match grid {
+            Some(_) => Vec3::splat(Vec3::from(map.info.ambient).dot(Vec3::new(0.2126, 0.7152, 0.0722)) * BAKED_AMBIENT_FLOOR),
+            None => Vec3::from(map.info.ambient),
         };
+        scene.fog = map.info.fog.as_ref().map(|f| Fog {
+            color: f.color.into(),
+            density: f.density,
+            height: f.height,
+            falloff: f.falloff,
+            max_opacity: f.max_opacity,
+            sky_density: f.sky_density,
+        });
         for light in map.lights {
             let (position, color) = (Vec3::from(light.position), Vec3::from(light.color));
             if light.kind == LIGHT_SPOT {

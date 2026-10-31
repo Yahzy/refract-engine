@@ -3,4 +3,5 @@
 //! will update it while the game runs.
 
 pub mod bake;
+pub mod probes;
 pub mod rays;
