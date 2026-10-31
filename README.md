@@ -48,4 +48,9 @@ game/     development game folder
 
 ## License
 
-MIT
+Refract is source-available under the [PolyForm Noncommercial License 1.0.0](LICENSE.md).
+
+- **Allowed**: using, studying, modifying and sharing the code for any noncommercial purpose (personal projects, learning, research, hobby servers and gamemodes).
+- **Not allowed**: selling the engine or any part of it, or using it in a commercial product or service, without written permission from the author.
+
+Contributions are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md) for how they are licensed. For commercial licensing, open an issue or contact the author.

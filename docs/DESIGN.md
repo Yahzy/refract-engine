@@ -173,4 +173,3 @@ Mesures (scène de départ, 1280×720, `--bench`) : petite map 0,3 ms de CPU et 
 
 - Physique (`rapier3d` ou Jolt) et transport réseau
 - Authentification (Steam ou comptes maison), hébergement des addons
-- Licence du projet
