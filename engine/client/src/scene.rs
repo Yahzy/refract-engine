@@ -2,7 +2,7 @@
 //! where the player starts. Geometry and materials live in the renderer.
 
 use glam::Vec3;
-use refract_render::{Camera, Frame, PointLight, Renderer, Sky, SpotLight, Sun};
+use refract_render::{Camera, Fog, Frame, PointLight, Renderer, Sky, SpotLight, Sun};
 
 use crate::test_scene::TestScene;
 
@@ -14,6 +14,7 @@ pub struct Scene {
     pub exposure: f32,
     pub point_lights: Vec<PointLight>,
     pub spot_lights: Vec<SpotLight>,
+    pub fog: Option<Fog>,
     /// Animates the test scene's lights.
     pub test: Option<TestScene>,
 }
@@ -35,6 +36,7 @@ impl Scene {
             ambient: self.ambient,
             exposure: self.exposure,
             time,
+            fog: self.fog,
         }
     }
 }

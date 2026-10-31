@@ -13,7 +13,7 @@ use refract_asset::map::{LIGHT_SPOT, MapFile, chunk_flags, prop_flags};
 use refract_asset::material::MaterialKind;
 use refract_asset::{MappedFile, ModelFile, TextureData, entities};
 use refract_core::Angles;
-use refract_render::{BlendMode, Camera, Detail, Layer, Material, MaterialId, MeshId, MeshPart, PointLight, ProbeGrid, Renderer, Sphere, SpotLight, Sun, TextureId};
+use refract_render::{BlendMode, Camera, Detail, Fog, Layer, Material, MaterialId, MeshId, MeshPart, PointLight, ProbeGrid, Renderer, Sphere, SpotLight, Sun, TextureId};
 
 use crate::scene::{Scene, default_sky};
 
@@ -89,7 +89,7 @@ impl Loader<'_> {
                 let instance = self.renderer.add_instance(mesh, shadow_only, transform);
                 self.renderer.set_visible(instance, false);
             } else if let Some(material) = self.material(materials[submesh.material as usize]) {
-                self.add_instance(mesh, material, transform);
+                self.add_instance(mesh, material, transform, submesh.flags & chunk_flags::SKYBOX != 0);
             }
         }
 
@@ -97,10 +97,11 @@ impl Loader<'_> {
         for prop in map.props {
             let parts = self.model(models[prop.model as usize]);
             let placement = Mat4::from_scale_rotation_translation(Vec3::splat(prop.scale), angles(prop.angles).to_quat(), prop.origin.into());
-            let transform = if prop.flags & prop_flags::SKYBOX != 0 { sky * placement } else { placement };
+            let distant = prop.flags & prop_flags::SKYBOX != 0;
+            let transform = if distant { sky * placement } else { placement };
             for &(mesh, material) in &parts {
                 if let Some(material) = material {
-                    self.add_instance(mesh, material, transform);
+                    self.add_instance(mesh, material, transform, distant);
                 }
             }
         }
@@ -128,6 +129,14 @@ impl Loader<'_> {
             exposure: 1.0,
             point_lights: Vec::new(),
             spot_lights: Vec::new(),
+            fog: map.info.fog.as_ref().map(|f| Fog {
+                color: f.color.into(),
+                density: f.density,
+                height: f.height,
+                falloff: f.falloff,
+                max_opacity: f.max_opacity,
+                sky_density: f.sky_density,
+            }),
             test: None,
         };
         for light in map.lights {
@@ -152,10 +161,14 @@ impl Loader<'_> {
         Ok(scene)
     }
 
-    fn add_instance(&mut self, mesh: MeshId, (material, reflection): (MaterialId, Option<u32>), transform: Mat4) {
+    /// `distant`: in the 3D skybox.
+    fn add_instance(&mut self, mesh: MeshId, (material, reflection): (MaterialId, Option<u32>), transform: Mat4, distant: bool) {
         let instance = self.renderer.add_instance(mesh, material, transform);
         if let Some(cubemap) = reflection {
             self.renderer.set_reflection(instance, cubemap);
+        }
+        if distant {
+            self.renderer.set_distant(instance, true);
         }
     }
 

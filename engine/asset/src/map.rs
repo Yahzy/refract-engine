@@ -69,12 +69,21 @@ pub struct SkyCamera {
     pub scale: f32,
 }
 
+/// Haze over the map: thickest at `height`, thinning above it, lit by the
+/// sky (`color`) and the sun shining through it.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Fog {
+    /// Linear RGB.
     pub color: [f32; 3],
-    pub start: f32,
-    pub end: f32,
-    pub max_density: f32,
+    /// Extinction per world unit at `height`.
+    pub density: f32,
+    pub height: f32,
+    /// Height over which the fog thins by a factor e.
+    pub falloff: f32,
+    /// The most the fog hides of what is behind it, 0..1.
+    pub max_opacity: f32,
+    /// Extinction per world unit for the 3D skybox and the sky, at `height`.
+    pub sky_density: f32,
 }
 
 #[repr(C)]

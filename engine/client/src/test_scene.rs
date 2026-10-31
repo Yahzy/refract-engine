@@ -98,6 +98,7 @@ impl TestScene {
             ambient: Vec3::ZERO,
             exposure: 0.6,
             point_lights,
+            fog: None,
             spot_lights,
             test: Some(test),
         }

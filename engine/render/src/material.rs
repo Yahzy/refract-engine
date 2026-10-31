@@ -88,6 +88,7 @@ pub struct Detail {
 pub struct MaterialId(pub(crate) u32);
 
 pub const FLAG_ALPHA_TEST: u32 = 1;
+pub const FLAG_ADDITIVE: u32 = 2;
 
 impl From<&Material> for GpuMaterial {
     fn from(material: &Material) -> Self {
@@ -101,7 +102,11 @@ impl From<&Material> for GpuMaterial {
             roughness: material.roughness.clamp(0.0, 1.0),
             base_texture: material.base_texture.unwrap_or(TextureId::WHITE).0,
             alpha_cutoff: material.alpha_cutoff,
-            flags: if material.blend == BlendMode::AlphaTest { FLAG_ALPHA_TEST } else { 0 },
+            flags: match material.blend {
+                BlendMode::AlphaTest => FLAG_ALPHA_TEST,
+                BlendMode::Additive => FLAG_ADDITIVE,
+                _ => 0,
+            },
             reflectance: material.reflectance,
             normal_texture: index(material.normal_texture),
             base_texture2: index(layer2.map(|l| l.base_texture)),

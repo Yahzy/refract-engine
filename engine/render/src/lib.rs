@@ -34,7 +34,7 @@ pub use ambient::ProbeGrid;
 pub use camera::Camera;
 pub use culling::Sphere;
 pub use error::RenderError;
-pub use light::{PointLight, Sky, SpotLight, Sun};
+pub use light::{Fog, PointLight, Sky, SpotLight, Sun};
 pub use material::{BlendMode, Detail, DetailBlend, Layer, Material, MaterialId};
 pub use mesh::{MeshData, MeshId, MeshPart, VertexAttributes};
 pub use texture::TextureId;

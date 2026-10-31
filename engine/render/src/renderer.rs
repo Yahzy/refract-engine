@@ -7,7 +7,7 @@ use crate::ambient::{ProbeGrid, ProbeVolume};
 use crate::buffer::GrowableBuffer;
 use crate::culling::{Frustum, Sphere};
 use crate::gpu::Gpu;
-use crate::gpu_types::{GpuInstance, GpuLight, GpuMaterial, GpuView, NO_REFLECTION};
+use crate::gpu_types::{GpuInstance, GpuLight, GpuMaterial, GpuView, INSTANCE_DISTANT, NO_REFLECTION};
 use crate::material::BlendMode;
 use crate::mesh::{MeshArena, MeshPart, VertexAttributes};
 use crate::occluders::Occluders;
@@ -19,7 +19,7 @@ use crate::readback::{self, Image};
 use crate::shadow::{self, CASCADES, LOCAL_LAYERS, LOCAL_RESOLUTION, SUN_RESOLUTION};
 use crate::targets::Targets;
 use crate::texture::TextureStore;
-use crate::{Camera, Material, MaterialId, MeshData, MeshId, PointLight, RenderError, Sky, SpotLight, Sun, TextureId};
+use crate::{Camera, Fog, Material, MaterialId, MeshData, MeshId, PointLight, RenderError, Sky, SpotLight, Sun, TextureId};
 
 /// Most local lights in a frame: the visible ones that light the camera's
 /// surroundings most. Each pixel only loops over those of its cluster.
@@ -48,6 +48,7 @@ pub struct Frame<'a> {
     pub exposure: f32,
     /// Seconds, for animated effects.
     pub time: f32,
+    pub fog: Option<Fog>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -282,7 +283,7 @@ impl Renderer {
     pub fn add_instance(&mut self, mesh: MeshId, material: MaterialId, transform: Mat4) -> InstanceId {
         let bounds = self.meshes.range(mesh).bounds.transformed(&transform);
         let reflection = nearest(&self.reflections.1, bounds.center);
-        let gpu = GpuInstance { model: transform.to_cols_array_2d(), material: material.0, reflection, _pad: [0; 2] };
+        let gpu = GpuInstance { model: transform.to_cols_array_2d(), material: material.0, reflection, flags: 0, _pad: 0 };
         let pass = self.material_passes[material.0 as usize];
         // Blended surfaces let light through.
         let casts_shadows = matches!(pass, Pass::Opaque | Pass::OpaqueTwoSided);
@@ -313,6 +314,14 @@ impl Renderer {
     pub fn set_casts_shadows(&mut self, id: InstanceId, casts_shadows: bool) {
         self.instances[id.0 as usize].casts_shadows = casts_shadows;
         self.occluders_dirty = true;
+    }
+
+    /// Whether the instance is part of the distant scenery (a 3D skybox),
+    /// which the fog hides like the sky rather than like the world.
+    pub fn set_distant(&mut self, id: InstanceId, distant: bool) {
+        let flags = &mut self.instances[id.0 as usize].gpu.flags;
+        *flags = if distant { *flags | INSTANCE_DISTANT } else { *flags & !INSTANCE_DISTANT };
+        self.instances_dirty = true;
     }
 
     /// Whether the instance is drawn in the view. Hidden instances may still
@@ -407,6 +416,7 @@ impl Renderer {
         self.occluders_dirty = false;
 
         let camera = &frame.camera;
+        let fog = frame.fog.unwrap_or(Fog { color: Vec3::ZERO, density: 0.0, height: 0.0, falloff: 1.0, max_opacity: 0.0, sky_density: 0.0 });
         let aspect = self.width as f32 / self.height as f32;
         let view_proj = camera.projection(aspect) * camera.view();
         let view_frustum = Frustum::from_matrix(&view_proj);
@@ -474,6 +484,12 @@ impl Renderer {
             screen_size: [self.width as f32, self.height as f32],
             cluster_near: camera.near,
             cluster_far: CLUSTER_FAR,
+            fog_color: fog.color.into(),
+            fog_density: fog.density,
+            fog_height: fog.height,
+            fog_falloff: fog.falloff.max(1.0),
+            fog_max_opacity: fog.max_opacity,
+            fog_sky_density: fog.sky_density,
         };
         self.gpu.queue.write_buffer(&self.view_buffer, 0, bytemuck::bytes_of(&view));
         plan

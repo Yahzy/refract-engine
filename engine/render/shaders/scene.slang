@@ -5,6 +5,7 @@
 // With RAY_TRACED_SHADOWS, local lights without a shadow map cast shadows
 // through rays against the scene's opaque geometry.
 
+import fog;
 import frame;
 import pbr;
 import shadows;
@@ -76,6 +77,7 @@ struct VertexOut
     float4 color : COLOR;
     nointerpolation uint material : MATERIAL;
     nointerpolation uint reflection : REFLECTION;
+    nointerpolation uint instance_flags : INSTANCE_FLAGS;
 };
 
 // The one way positions are transformed, so that the depth prepass and the
@@ -147,6 +149,7 @@ VertexOut scene_vs(VertexIn input, uint instance_id : SV_VulkanInstanceID)
     output.color = input.color;
     output.material = instance.material;
     output.reflection = instance.reflection;
+    output.instance_flags = instance.flags;
     return output;
 }
 
@@ -422,5 +425,6 @@ float4 scene_fs(VertexOut input, bool front_facing : SV_IsFrontFace) : SV_Target
     color += specular_ambient * (specular_color(surface) * env.x + env.y);
 
     color += s.emissive;
+    color = apply_fog(g_view, color, input.world, (input.instance_flags & INSTANCE_DISTANT) != 0, (material.flags & MATERIAL_ADDITIVE) != 0);
     return float4(color, base.a);
 }

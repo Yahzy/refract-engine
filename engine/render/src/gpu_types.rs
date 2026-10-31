@@ -38,6 +38,13 @@ pub struct GpuView {
     pub screen_size: [f32; 2],
     pub cluster_near: f32,
     pub cluster_far: f32,
+    pub fog_color: [f32; 3],
+    pub fog_density: f32,
+    pub fog_height: f32,
+    pub fog_falloff: f32,
+    /// 0 without fog.
+    pub fog_max_opacity: f32,
+    pub fog_sky_density: f32,
 }
 
 /// Must match `shaders/lib/frame.slang`.
@@ -51,8 +58,12 @@ pub struct GpuInstance {
     pub material: u32,
     /// Index of the nearest reflection cubemap, or [`NO_REFLECTION`].
     pub reflection: u32,
-    pub _pad: [u32; 2],
+    pub flags: u32,
+    pub _pad: u32,
 }
+
+/// Instance flag: distant scenery, fogged like the sky.
+pub const INSTANCE_DISTANT: u32 = 1;
 
 pub const NO_REFLECTION: u32 = u32::MAX;
 
@@ -106,7 +117,7 @@ mod tests {
 
     #[test]
     fn sizes_match_the_shaders() {
-        assert_eq!(size_of::<GpuView>(), 592);
+        assert_eq!(size_of::<GpuView>(), 624);
         assert_eq!(size_of::<GpuInstance>(), 80);
         assert_eq!(size_of::<GpuMaterial>(), 96);
         assert_eq!(size_of::<GpuLight>(), 64);

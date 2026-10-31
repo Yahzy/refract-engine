@@ -13,7 +13,7 @@ use refract_formats::material::{self as source_material, mapping_size};
 
 use refract_render::Sky;
 
-use crate::{CONVERTER_VERSION, Converter, geometry, lights, parallel_map};
+use crate::{CONVERTER_VERSION, Converter, fog, geometry, lights, parallel_map};
 
 pub enum MapOutcome {
     Converted,
@@ -40,7 +40,7 @@ impl Converter {
                 sky: None,
                 reflections: None,
                 sky_camera: map.sky_camera.map(|c| SkyCamera { origin: c.origin, scale: c.scale }),
-                fog: None,
+                fog: fog::fog(&map),
             },
             ..Default::default()
         };

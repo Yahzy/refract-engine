@@ -6,6 +6,7 @@
 //! `materials/concrete/floor01.rmat`, its texture
 //! `textures/concrete/floor01.ktx2`.
 
+mod fog;
 mod geometry;
 mod lights;
 mod map;
@@ -25,7 +26,7 @@ pub use map::MapOutcome;
 
 /// Bumped whenever the converter's output changes, so that existing content
 /// is converted again.
-pub const CONVERTER_VERSION: u32 = 14;
+pub const CONVERTER_VERSION: u32 = 16;
 
 pub struct Converter {
     fs: FileSystem,

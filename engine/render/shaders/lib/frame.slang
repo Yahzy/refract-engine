@@ -46,6 +46,13 @@ public struct View
     public float2 screen_size;
     public float cluster_near;
     public float cluster_far;
+    // Height fog (see fog.slang); none when fog_max_opacity is 0.
+    public float3 fog_color;
+    public float fog_density;
+    public float fog_height;
+    public float fog_falloff;
+    public float fog_max_opacity;
+    public float fog_sky_density;
 };
 
 // Light clusters: screen tiles times depth slices.
@@ -75,9 +82,12 @@ public struct Instance
     public uint material;
     // Nearest reflection cubemap, or NO_REFLECTION.
     public uint reflection;
+    public uint flags;
     public uint _pad1;
-    public uint _pad2;
 };
+
+// Distant scenery (a 3D skybox), fogged like the sky.
+public static const uint INSTANCE_DISTANT = 1;
 
 public struct Material
 {
@@ -119,6 +129,7 @@ public static const uint DETAIL_GLOW = 5;
 public static const uint NO_REFLECTION = 0xffffffff;
 
 public static const uint MATERIAL_ALPHA_TEST = 1;
+public static const uint MATERIAL_ADDITIVE = 2;
 
 // Layout of refract_asset::map::Probe.
 public struct Probe

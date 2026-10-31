@@ -21,6 +21,24 @@ pub struct Sky {
     pub ground: Vec3,
 }
 
+/// Haze: exponential with distance, thickest at `height` and thinning above
+/// it, lit by the sky (`color`) and glowing towards the sun. Computed in
+/// closed form for every pixel, without marching through it.
+#[derive(Clone, Copy, Debug)]
+pub struct Fog {
+    pub color: Vec3,
+    /// Extinction per world unit at `height`.
+    pub density: f32,
+    pub height: f32,
+    /// Height over which the fog thins by a factor e.
+    pub falloff: f32,
+    /// The most the fog hides of what is behind it, 0..1.
+    pub max_opacity: f32,
+    /// Extinction per world unit at `height` for distant scenery (see
+    /// [`crate::Renderer::set_distant`]) and the sky.
+    pub sky_density: f32,
+}
+
 impl Sky {
     /// A clear day.
     pub const CLEAR_DAY: Sky = Sky { zenith: Vec3::new(0.18, 0.32, 0.65), horizon: Vec3::new(0.55, 0.62, 0.72), ground: Vec3::new(0.12, 0.11, 0.10) };

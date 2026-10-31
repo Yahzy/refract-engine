@@ -123,7 +123,7 @@ fn light_color(value: Option<&str>, default: [f32; 4]) -> ([f32; 3], f32) {
     ([r, g, b].map(|c| srgb_to_linear(c / 255.0)), brightness.max(0.0))
 }
 
-fn srgb_to_linear(c: f32) -> f32 {
+pub(crate) fn srgb_to_linear(c: f32) -> f32 {
     if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
 }
 
