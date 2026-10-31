@@ -1,6 +1,6 @@
 //! Materials: VMT to `.rmat`, converting the textures they use.
 
-use refract_asset::material::{Layer, Material, MaterialKind};
+use refract_asset::material::{Detail, DetailBlend, Layer, Material, MaterialKind};
 use refract_formats::material::{self, MaterialInfo, parse_color, parse_number};
 
 use crate::texture::Role;
@@ -66,11 +66,36 @@ impl Converter {
         };
 
         let texture = |name: &Option<String>, role| name.as_deref().and_then(|n| self.texture(n, role));
-        let layer2 = info.base_texture2.as_ref().map(|_| Layer { base_color: texture(&info.base_texture2, Role::Color), normal: texture(&info.bump_map2, Role::Data) });
+        let bump = if info.ssbump { Role::SelfShadowedBump } else { Role::Data };
+        let layer2 = info.base_texture2.as_ref().map(|_| Layer {
+            base_color: texture(&info.base_texture2, Role::Color),
+            normal: texture(&info.bump_map2, bump),
+            blend_modulate: texture(&info.blend_modulate, Role::Data),
+        });
+        let detail = info.detail.as_ref().and_then(|detail| {
+            let blend = match detail.blend_mode {
+                0 | 7 => DetailBlend::Modulate2x,
+                1 => DetailBlend::Add,
+                2 | 3 => DetailBlend::Over,
+                4 => DetailBlend::Under,
+                5 | 6 => DetailBlend::Glow,
+                8 => DetailBlend::Multiply,
+                _ => return None,
+            };
+            // Modulating details are factors around mid-grey, not colours.
+            let role = if blend == DetailBlend::Modulate2x { Role::Data } else { Role::Color };
+            Some(Detail {
+                texture: self.texture(&detail.texture, role)?,
+                scale: detail.scale,
+                blend,
+                amount: detail.blend_factor.clamp(0.0, 1.0),
+                tint: var("$detailtint").and_then(parse_color).unwrap_or([1.0; 3]),
+            })
+        });
         Material {
             kind,
             base_color: texture(&info.base_texture, Role::Color),
-            normal: texture(&info.bump_map, Role::Data),
+            normal: texture(&info.bump_map, bump),
             color: [tint[0], tint[1], tint[2], alpha],
             albedo: Some(self.average_color(info.base_texture.as_deref()).map_or(tint, |c| [c[0] * tint[0], c[1] * tint[1], c[2] * tint[2]])),
             roughness,
@@ -80,6 +105,7 @@ impl Converter {
             alpha_cutoff: info.alpha_test.unwrap_or(0.5),
             two_sided: info.no_cull,
             layer2,
+            detail,
             scroll: None,
         }
     }

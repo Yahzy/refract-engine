@@ -38,9 +38,10 @@ public struct Light
     public float3 direction;
     public float cos_outer;
     public float cos_inner;
+    // Room around the light that shadow rays ignore (its fixture).
+    public float clearance;
     public float _pad0;
     public float _pad1;
-    public float _pad2;
 };
 
 // Layout of refract_asset::map::Probe.
@@ -54,7 +55,8 @@ public struct Probe
 [[vk::binding(0, 0)]] public RaytracingAccelerationStructure g_scene;
 [[vk::binding(1, 0)]] public StructuredBuffer<float> g_positions;
 [[vk::binding(2, 0)]] public StructuredBuffer<uint> g_indices;
-[[vk::binding(3, 0)]] public StructuredBuffer<float4> g_albedo; // per triangle
+// Per triangle; alpha 1 for two-sided surfaces.
+[[vk::binding(3, 0)]] public StructuredBuffer<float4> g_albedo;
 [[vk::binding(4, 0)]] public StructuredBuffer<Light> g_lights;
 [[vk::binding(5, 0)]] public StructuredBuffer<uint2> g_light_cells; // first, count
 [[vk::binding(6, 0)]] public StructuredBuffer<uint> g_light_indices;
@@ -147,7 +149,7 @@ public float3 direct_light(float3 p, float3 n)
                 float t = saturate((dot(-to_light, light.direction) - light.cos_outer) / max(light.cos_inner - light.cos_outer, 1e-4));
                 attenuation *= t * t * (3.0 - 2.0 * t);
             }
-            if (attenuation > 0.0 && !occluded(origin, to_light, distance - 1.0))
+            if (attenuation > 0.0 && !occluded(origin, to_light, distance - min(light.clearance, distance * 0.5)))
                 sum += light.color * attenuation * n_dot_l;
         }
     }

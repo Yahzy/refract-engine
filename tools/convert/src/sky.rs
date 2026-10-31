@@ -17,9 +17,8 @@ use crate::Converter;
 const FACE_SIZE: u32 = 256;
 /// The sky is shown this bright (a white texel gives 1.5).
 const BRIGHTNESS: f32 = 1.5;
-/// Share of the shown sky that lights the world (one texel stands for the
-/// whole blurred hemisphere around it); the engine uses the same share.
-const LIGHT_SHARE: f32 = 0.4;
+/// How much of the map's ambient colour the sky's light takes (0 grey, 1 all).
+const SKY_TINT: f32 = 0.5;
 
 impl Converter {
     /// Converts the map's sky; returns its native path, and the light it
@@ -37,9 +36,21 @@ impl Converter {
             let faces = load_skybox(&self.fs, &skyname)?;
             (format!("textures/skybox/{skyname}.ktx2"), Box::new(move |dir| sample_skybox(&faces, dir)))
         };
-        let light = |dir: Vec3| color(dir.normalize()) * BRIGHTNESS * LIGHT_SHARE;
-        let horizon = (0..8).map(|i| (i as f32 * std::f32::consts::TAU / 8.0).sin_cos()).map(|(s, c)| light(Vec3::new(c, s, 0.05))).sum::<Vec3>() / 8.0;
-        let gradient = Sky { zenith: light(Vec3::Z), horizon, ground: light(-Vec3::Z) };
+        let light = |dir: Vec3| color(dir.normalize()) * BRIGHTNESS;
+        // How much light comes from the sky; its colour is the one the map
+        // gives its ambient light, halfway to grey, as the textures' blue is
+        // far too strong and shadows lit by the sky alone would look blue.
+        let mut gradient = gradient(&light);
+        if let Some(environment) = map.find_entities("light_environment").next() {
+            let tint = Vec3::from(crate::lights::ambient(Some(environment)));
+            if luminance(tint) > 1e-6 {
+                let tint = Vec3::ONE.lerp(tint / luminance(tint), SKY_TINT);
+                for c in [&mut gradient.zenith, &mut gradient.horizon, &mut gradient.ground] {
+                    *c = tint * luminance(*c);
+                }
+            }
+        }
+        log::debug!("sky light: zenith {} horizon {} ground {}", gradient.zenith, gradient.horizon, gradient.ground);
         if !self.claim(&path) && !painted {
             return Some((path, gradient));
         }
@@ -64,6 +75,37 @@ impl Converter {
             }
         }
     }
+}
+
+fn luminance(c: Vec3) -> f32 {
+    c.dot(Vec3::new(0.2126, 0.7152, 0.0722))
+}
+
+/// The sky's light as a zenith / horizon / ground gradient. Each is the light
+/// a surface facing that way receives, averaged over the half of the sky it
+/// sees: a single texel straight up would give the bluest spot of the sky,
+/// and leave out the clouds and the paler horizon.
+fn gradient(light: &dyn Fn(Vec3) -> Vec3) -> Sky {
+    const SAMPLES: u32 = 4096;
+    let golden = std::f32::consts::PI * (3.0 - 5f32.sqrt());
+    let directions: Vec<Vec3> = (0..SAMPLES)
+        .map(|i| {
+            let z = 1.0 - 2.0 * (i as f32 + 0.5) / SAMPLES as f32;
+            let r = (1.0 - z * z).sqrt();
+            let (s, c) = (golden * i as f32).sin_cos();
+            Vec3::new(r * c, r * s, z)
+        })
+        .collect();
+    let lights: Vec<Vec3> = directions.iter().map(|&d| light(d)).collect();
+    let facing = |normal: Vec3| {
+        let (sum, weight) = directions.iter().zip(&lights).fold((Vec3::ZERO, 0.0), |(sum, weight), (d, l)| {
+            let w = d.dot(normal).max(0.0);
+            (sum + *l * w, weight + w)
+        });
+        sum / weight
+    };
+    let horizon = (0..8).map(|i| (i as f32 * std::f32::consts::TAU / 8.0).sin_cos()).map(|(s, c)| facing(Vec3::new(c, s, 0.0))).sum::<Vec3>() / 8.0;
+    Sky { zenith: facing(Vec3::Z), horizon, ground: facing(-Vec3::Z) }
 }
 
 /// The direction through texel `uv` of cube face `face` (+X, -X, +Y, -Y, +Z, -Z).

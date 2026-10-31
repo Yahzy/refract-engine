@@ -22,8 +22,10 @@ pub struct BakeInput<'a> {
     /// Triangles blocking and bouncing light, world space.
     pub positions: &'a [[f32; 3]],
     pub indices: &'a [u32],
-    /// Linear albedo of each triangle.
-    pub albedo: &'a [[f32; 3]],
+    /// Linear albedo of each triangle; alpha 1 for thin two-sided surfaces
+    /// (leaves, fences), lit on both sides: rays reaching their back are not
+    /// inside anything.
+    pub albedo: &'a [[f32; 4]],
     /// Direction the sunlight travels, and its colour times intensity.
     pub sun: Option<(Vec3, Vec3)>,
     pub sky: Sky,
@@ -86,7 +88,8 @@ struct GpuLight {
     direction: [f32; 3],
     cos_outer: f32,
     cos_inner: f32,
-    _pad: [f32; 3],
+    clearance: f32,
+    _pad: [f32; 2],
 }
 
 /// Whether this machine's GPU can bake (ray queries).
@@ -106,8 +109,7 @@ pub fn bake(input: &BakeInput) -> Result<Baked, RenderError> {
         let contents = if contents.is_empty() { &[0u8; 64][..] } else { contents };
         device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some(label), contents, usage: wgpu::BufferUsages::STORAGE })
     };
-    let albedo: Vec<[f32; 4]> = input.albedo.iter().map(|a| [a[0], a[1], a[2], 0.0]).collect();
-    let albedo = storage("albedo", bytemuck::cast_slice(&albedo));
+    let albedo = storage("albedo", bytemuck::cast_slice(input.albedo));
     let lights: Vec<GpuLight> = input.lights.iter().map(gpu_light).collect();
     let (light_grid, cells, light_indices) = sort_lights(input.lights);
     let lights = storage("lights", bytemuck::cast_slice(&lights));
@@ -302,7 +304,8 @@ fn gpu_light(light: &Light) -> GpuLight {
         direction: light.direction,
         cos_outer: if spot { light.outer_angle.to_radians().cos() } else { -1.0 },
         cos_inner: if spot { light.inner_angle.to_radians().cos() } else { -1.0 },
-        _pad: [0.0; 3],
+        clearance: light.clearance,
+        _pad: [0.0; 2],
     }
 }
 
@@ -407,7 +410,7 @@ mod tests {
         let base = positions.len() as u32;
         positions.extend(block.positions.iter().map(|p| [p[0] + 256.0, p[1] + 256.0, p[2]]));
         indices.extend(block.indices.iter().map(|i| i + base));
-        let albedo = vec![[0.8; 3]; indices.len() / 3];
+        let albedo = vec![[0.8, 0.8, 0.8, 0.0]; indices.len() / 3];
         let light = Light { kind: 0, position: [0.0, 0.0, 400.0], range: 2048.0, intensity: 50.0, color: [1.0; 3], ..Default::default() };
         // Probe centres at -512, -256, 0, 256, 512 on each axis.
         let grid = ProbeGrid { origin: [-640.0; 3], cell_size: 256.0, resolution: [5, 5, 5], _pad: 0 };

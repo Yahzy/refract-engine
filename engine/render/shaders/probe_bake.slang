@@ -63,6 +63,8 @@ void probe_bake(uint3 group : SV_GroupID, uint thread : SV_GroupIndex)
         uint triangle = query.CommittedPrimitiveIndex();
         float3 a = vertex(triangle * 3), b = vertex(triangle * 3 + 1), c = vertex(triangle * 3 + 2);
         float3 n = normalize(cross(b - a, c - a));
+        if (g_albedo[triangle].a > 0.5 && dot(n, dir) > 0.0)
+            n = -n; // two-sided: its back is lit like its front
         distance = min(query.CommittedRayT(), FAR);
         if (dot(n, dir) > 0.0)
         {

@@ -1,9 +1,13 @@
 //! Maps: BSP to `.rmap`, converting every material, texture and model they use.
 
+use std::collections::HashMap;
+
 use anyhow::Context;
+use glam::{Mat3, Vec3};
 use refract_asset::entities::{self, Entity};
 use refract_asset::map::{MapData, MapFile, MapInfo, Prop, SkyCamera, chunk_flags, prop_flags};
-use refract_asset::MappedFile;
+use refract_asset::{MappedFile, ModelFile};
+use refract_core::Angles;
 use refract_formats::bsp::{self, Map, MeshBatch};
 use refract_formats::material::{self as source_material, mapping_size};
 
@@ -44,8 +48,9 @@ impl Converter {
         let sky = self.sky(&map);
         data.info.sky = sky.as_ref().map(|(path, _)| path.clone());
         self.add_geometry(&map, &mut data);
-        self.add_props(&map, &mut data);
+        let boxes = self.add_props(&map, &mut data);
         data.lights = map.entities.iter().filter(|e| e.classname == "light" || e.classname == "light_spot").filter_map(lights::light).collect();
+        lights::fit_fixtures(&mut data.lights, &boxes);
         let light = self.light(&map, &data, sky.as_ref().map_or(Sky::CLEAR_DAY, |(_, light)| *light), data.info.sky.as_deref());
         data.probes = light.probes;
         if let Some((positions, path)) = light.reflections {
@@ -93,16 +98,26 @@ impl Converter {
         geometry::append(&mut data.geometry, &map.shadow_batch, "", [1.0, 1.0], chunk_flags::SHADOW_ONLY);
     }
 
-    fn add_props(&self, map: &Map, data: &mut MapData) {
+    /// Adds the map's props; returns where each one's box lies.
+    fn add_props(&self, map: &Map, data: &mut MapData) -> Vec<lights::PlacedBox> {
         let props: Vec<_> = map.static_props.iter().chain(&map.entity_props).collect();
         let mut models: Vec<(&str, usize)> = props.iter().map(|p| (p.model.as_str(), p.skin)).collect();
         models.sort_unstable();
         models.dedup();
         let converted: Vec<((&str, usize), Option<String>)> = parallel_map(&models, |&(model, skin)| ((model, skin), self.model(model, skin)));
+        let bounds: HashMap<&str, (Vec3, Vec3)> = converted.iter().filter_map(|(_, path)| Some((path.as_deref()?, self.model_bounds(path.as_deref()?)?))).collect();
+        let mut boxes = Vec::new();
 
         for prop in props {
             let Some((_, Some(path))) = converted.iter().find(|(key, _)| *key == (prop.model.as_str(), prop.skin)) else { continue };
             let model = data.model_index(path);
+            if !prop.in_skybox
+                && let Some(&(mins, maxs)) = bounds.get(path.as_str())
+            {
+                let [pitch, yaw, roll] = prop.angles;
+                let rotation = Mat3::from_quat(Angles::new(pitch, yaw, roll).to_quat());
+                boxes.push(lights::PlacedBox { rotation, origin: Vec3::from(prop.origin), scale: prop.scale, mins, maxs });
+            }
             data.props.push(Prop {
                 model,
                 flags: if prop.in_skybox { prop_flags::SKYBOX } else { 0 },
@@ -115,5 +130,14 @@ impl Converter {
                 _pad: 0,
             });
         }
+        boxes
+    }
+
+    /// The box around a converted model's vertices.
+    fn model_bounds(&self, path: &str) -> Option<(Vec3, Vec3)> {
+        let file = MappedFile::open(&self.out.join(path)).ok()?;
+        let model = ModelFile::read(file.bytes()).ok()?;
+        let positions = model.geometry.positions.iter().map(|p| Vec3::from(*p));
+        positions.fold(None, |bounds: Option<(Vec3, Vec3)>, p| Some(bounds.map_or((p, p), |(min, max)| (min.min(p), max.max(p)))))
     }
 }

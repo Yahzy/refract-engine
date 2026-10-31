@@ -67,8 +67,19 @@ pub struct GpuMaterial {
     pub alpha_cutoff: f32,
     pub flags: u32,
     pub reflectance: f32,
-    pub _pad: [f32; 3],
+    /// Texture indices; [`NO_TEXTURE`] when the material has none.
+    pub normal_texture: u32,
+    pub base_texture2: u32,
+    pub normal_texture2: u32,
+    pub blend_modulate: u32,
+    pub detail_texture: u32,
+    pub detail_scale: f32,
+    pub detail_amount: f32,
+    pub detail_tint: [f32; 3],
+    pub detail_blend: u32,
 }
+
+pub const NO_TEXTURE: u32 = u32::MAX;
 
 pub const LIGHT_POINT: u32 = 0;
 pub const LIGHT_SPOT: u32 = 1;
@@ -84,7 +95,9 @@ pub struct GpuLight {
     pub cos_outer: f32,
     pub cos_inner: f32,
     pub shadow: u32,
-    pub _pad: [f32; 2],
+    /// Room around the light that shadow rays ignore (its fixture).
+    pub clearance: f32,
+    pub _pad: f32,
 }
 
 #[cfg(test)]
@@ -95,7 +108,7 @@ mod tests {
     fn sizes_match_the_shaders() {
         assert_eq!(size_of::<GpuView>(), 592);
         assert_eq!(size_of::<GpuInstance>(), 80);
-        assert_eq!(size_of::<GpuMaterial>(), 64);
+        assert_eq!(size_of::<GpuMaterial>(), 96);
         assert_eq!(size_of::<GpuLight>(), 64);
     }
 }

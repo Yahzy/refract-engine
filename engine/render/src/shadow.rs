@@ -183,7 +183,7 @@ mod tests {
     #[test]
     fn nearest_lights_get_shadows_first() {
         use crate::{PointLight, SpotLight};
-        let point = |x: f32| GpuLight::from(&PointLight { position: Vec3::new(x, 0.0, 0.0), color: Vec3::ONE, intensity: 1.0, range: 100.0, casts_shadows: true });
+        let point = |x: f32| GpuLight::from(&PointLight { position: Vec3::new(x, 0.0, 0.0), color: Vec3::ONE, intensity: 1.0, range: 100.0, casts_shadows: true, clearance: 0.0 });
         let spot = GpuLight::from(&SpotLight {
             position: Vec3::new(300.0, 0.0, 0.0),
             direction: Vec3::X,
@@ -193,6 +193,7 @@ mod tests {
             inner_angle: 20.0,
             outer_angle: 30.0,
             casts_shadows: true,
+            clearance: 0.0,
         });
         // Far point light, near point light, a spot, and a light that casts no shadow.
         let mut lights = vec![point(2000.0), point(200.0), spot, point(250.0)];

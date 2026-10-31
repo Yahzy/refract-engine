@@ -91,10 +91,30 @@ public struct Material
     public uint flags;
     // How much a non-metal reflects head-on (F0).
     public float reflectance;
-    public float _pad0;
-    public float _pad1;
-    public float _pad2;
+    // Tangent-space normal map (green along +V), or NO_TEXTURE.
+    public uint normal_texture;
+    // Second layer, blended in by the vertex alpha; NO_TEXTURE without one.
+    public uint base_texture2;
+    public uint normal_texture2;
+    // Sharpens that blend: green is where the layers meet, red how softly.
+    public uint blend_modulate;
+    // A finer texture repeated `detail_scale` times over the base.
+    public uint detail_texture;
+    public float detail_scale;
+    public float detail_amount;
+    public float3 detail_tint;
+    // DETAIL_*.
+    public uint detail_blend;
 };
+
+public static const uint NO_TEXTURE = 0xffffffff;
+
+public static const uint DETAIL_MODULATE_2X = 0;
+public static const uint DETAIL_ADD = 1;
+public static const uint DETAIL_OVER = 2;
+public static const uint DETAIL_UNDER = 3;
+public static const uint DETAIL_MULTIPLY = 4;
+public static const uint DETAIL_GLOW = 5;
 
 public static const uint NO_REFLECTION = 0xffffffff;
 
@@ -138,8 +158,9 @@ public struct Light
     public float cos_inner;
     // First layer of its shadow maps (6 for a point light), or NO_SHADOW.
     public uint shadow;
+    // Room around the light that shadow rays ignore (its fixture), world units.
+    public float clearance;
     public float _pad0;
-    public float _pad1;
 };
 
 // A triangle covering the screen, for vertex ids 0, 1, 2.

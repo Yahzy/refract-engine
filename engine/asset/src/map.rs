@@ -13,7 +13,7 @@ use crate::geometry::{Geometry, GeometryData};
 use crate::AssetError;
 
 const KIND: [u8; 4] = *b"MAP ";
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 /// [`crate::Submesh::flags`] of map chunks.
 pub mod chunk_flags {
@@ -114,7 +114,9 @@ pub struct Light {
     pub inner_angle: f32,
     pub outer_angle: f32,
     pub flags: u32,
-    pub _pad: u32,
+    /// Room around the light that its shadow rays ignore, world units: the
+    /// fixture (globe, shade, housing) it sits in.
+    pub clearance: f32,
 }
 
 /// A regular grid of light probes, one at each cell's center.

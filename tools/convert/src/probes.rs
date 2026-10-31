@@ -7,7 +7,7 @@
 //! are no reflections.
 
 use glam::{Mat4, UVec3, Vec3};
-use refract_asset::encoding::rgb9e5;
+use refract_asset::encoding::{rgb9e5, rgb9e5_decode};
 use refract_asset::map::{MapData, Probe, ProbeGrid, chunk_flags, prop_flags, probe_flags};
 use refract_asset::material::{Material, MaterialKind};
 use refract_asset::{MappedFile, ModelFile, TextureData, TextureFormat};
@@ -23,10 +23,10 @@ const MIN_CELL: f32 = 64.0;
 const MAX_PROBES: f32 = 2_000_000.0;
 const BOUNCES: u32 = 3;
 /// Albedo of hidden brush faces, which only block light.
-const HIDDEN_ALBEDO: [f32; 3] = [0.3; 3];
+const HIDDEN_ALBEDO: [f32; 4] = [0.3, 0.3, 0.3, 0.0];
 /// Distance recorded for every direction of probes without visibility data.
 const FAR: f32 = 2048.0;
-/// Passes spreading open cells into closed ones (resampled ambient cubes).
+/// Passes spreading open cells into closed ones.
 const DILATE_PASSES: usize = 3;
 /// Texels per side of a reflection cubemap face.
 const REFLECTION_SIZE: u32 = 64;
@@ -106,7 +106,8 @@ impl Converter {
             reflection_size: REFLECTION_SIZE,
             sky_cubemap: sky_texture.as_ref(),
         };
-        let baked = bake::bake(&input)?;
+        let mut baked = bake::bake(&input)?;
+        fill_closed(&mut baked.probes, UVec3::from(grid.resolution));
         let valid = baked.probes.iter().filter(|p| p.flags & probe_flags::VALID != 0).count();
         log::info!(
             "baked {} probes ({valid} in open space) and {} reflections over {} triangles in {:.1} s",
@@ -126,11 +127,18 @@ impl Converter {
         Ok(BakedLight { probes: Some((grid, baked.probes)), reflections })
     }
 
-    /// What a material reflects, for the bake; `None` for materials light goes through.
-    fn bake_albedo(&self, path: &str) -> Option<[f32; 3]> {
+    /// What a material reflects, for the bake (alpha 1 for thin surfaces:
+    /// two-sided or cut out, like leaves); `None` for materials light goes
+    /// through.
+    fn bake_albedo(&self, path: &str) -> Option<[f32; 4]> {
         let text = std::fs::read_to_string(self.out.join(path)).ok()?;
         let material = Material::parse(&text).ok()?;
-        matches!(material.kind, MaterialKind::Opaque | MaterialKind::AlphaTest).then(|| material.albedo.unwrap_or([0.5; 3]))
+        if !matches!(material.kind, MaterialKind::Opaque | MaterialKind::AlphaTest) {
+            return None;
+        }
+        let [r, g, b] = material.albedo.unwrap_or([0.5; 3]);
+        let thin = material.two_sided || material.kind == MaterialKind::AlphaTest;
+        Some([r, g, b, if thin { 1.0 } else { 0.0 }])
     }
 }
 
@@ -167,11 +175,11 @@ fn cube_array(texels: &[[f32; 4]], count: u32) -> TextureData<'static> {
 struct BakeScene {
     positions: Vec<[f32; 3]>,
     indices: Vec<u32>,
-    albedo: Vec<[f32; 3]>,
+    albedo: Vec<[f32; 4]>,
 }
 
 impl BakeScene {
-    fn add(&mut self, positions: &[[f32; 3]], indices: &[u32], transform: Mat4, albedo: [f32; 3]) {
+    fn add(&mut self, positions: &[[f32; 3]], indices: &[u32], transform: Mat4, albedo: [f32; 4]) {
         // Only the vertices these triangles use.
         let mut remap = std::collections::HashMap::new();
         for &index in indices {
@@ -230,6 +238,20 @@ fn resample(map: &Map, grid: ProbeGrid) -> Vec<Probe> {
             None => Probe::default(),
         })
         .collect()
+}
+
+/// Gives probes inside walls the light of their open neighbours. They stay
+/// marked closed: surfaces only use them where no open probe is near (thin
+/// gaps, small rooms), which would otherwise have no light at all.
+fn fill_closed(probes: &mut [Probe], resolution: UVec3) {
+    let cells = probes.iter().map(|p| (p.flags & probe_flags::VALID != 0).then(|| p.light.map(rgb9e5_decode))).collect();
+    for (probe, cube) in probes.iter_mut().zip(dilate(cells, resolution)) {
+        if let Some(cube) = cube
+            && probe.flags & probe_flags::VALID == 0
+        {
+            probe.light = cube.map(rgb9e5);
+        }
+    }
 }
 
 /// `value` as half-float bits (positive, finite values).

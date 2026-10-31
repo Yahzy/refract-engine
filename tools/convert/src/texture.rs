@@ -20,6 +20,8 @@ const MAX_FRAMES: u32 = 64;
 pub enum Role {
     Color,
     Data,
+    /// A self-shadowed bump map (`$ssbump`), stored as a normal map.
+    SelfShadowedBump,
 }
 
 impl Converter {
@@ -32,13 +34,17 @@ impl Converter {
             // to be missing, the engine shows its placeholder texture.
             return Some(path);
         }
-        let data = match material::load_compressed_frames(&self.fs, name, MAX_FRAMES) {
+        let compressed = if role == Role::SelfShadowedBump { None } else { material::load_compressed_frames(&self.fs, name, MAX_FRAMES) };
+        let data = match compressed {
             Some(frames) if !frames.is_empty() => from_compressed(&frames, role),
             _ => {
-                let frames = material::load_texture_frames(&self.fs, name, MAX_FRAMES);
+                let mut frames = material::load_texture_frames(&self.fs, name, MAX_FRAMES);
                 if frames.is_empty() {
                     log::warn!("missing texture {name}");
                     return None;
+                }
+                if role == Role::SelfShadowedBump {
+                    frames.iter_mut().for_each(Texture::ssbump_to_normal);
                 }
                 from_rgba(&frames, role)
             }

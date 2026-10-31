@@ -35,7 +35,7 @@ pub use camera::Camera;
 pub use culling::Sphere;
 pub use error::RenderError;
 pub use light::{PointLight, Sky, SpotLight, Sun};
-pub use material::{BlendMode, Material, MaterialId};
+pub use material::{BlendMode, Detail, DetailBlend, Layer, Material, MaterialId};
 pub use mesh::{MeshData, MeshId, MeshPart, VertexAttributes};
 pub use texture::TextureId;
 pub use readback::Image;

@@ -85,6 +85,7 @@ impl TestScene {
             inner_angle: 15.0,
             outer_angle: 25.0,
             casts_shadows: true,
+            clearance: 0.0,
         }];
 
         let mut test = Self { orbits };
@@ -108,7 +109,7 @@ impl TestScene {
         for orbit in &self.orbits {
             let angle = (orbit.phase + time * orbit.speed) * TAU;
             let position = orbit.center + Vec3::new(angle.cos(), angle.sin(), 0.0) * orbit.radius;
-            lights.push(PointLight { position, color: orbit.color, intensity: 30.0, range: 600.0, casts_shadows: true });
+            lights.push(PointLight { position, color: orbit.color, intensity: 30.0, range: 600.0, casts_shadows: true, clearance: 0.0 });
             renderer.set_transform(orbit.marker, Mat4::from_translation(position));
         }
     }

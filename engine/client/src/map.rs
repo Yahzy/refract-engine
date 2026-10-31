@@ -13,11 +13,13 @@ use refract_asset::map::{LIGHT_SPOT, MapFile, chunk_flags, prop_flags};
 use refract_asset::material::MaterialKind;
 use refract_asset::{MappedFile, ModelFile, TextureData, entities};
 use refract_core::Angles;
-use refract_render::{BlendMode, ProbeGrid, Camera, Material, MaterialId, MeshId, MeshPart, PointLight, Renderer, Sphere, SpotLight, Sun, TextureId};
+use refract_render::{BlendMode, Camera, Detail, Layer, Material, MaterialId, MeshId, MeshPart, PointLight, ProbeGrid, Renderer, Sphere, SpotLight, Sun, TextureId};
 
 use crate::scene::{Scene, default_sky};
 
-/// Share of the flat ambient light kept where baked probes light the map.
+/// Share of the flat ambient light kept where baked probes light the map,
+/// grey: it is all that lights rooms without lamps, which the map's ambient
+/// colour (meant for the sky) would tint.
 const BAKED_AMBIENT_FLOOR: f32 = 0.1;
 /// Height of the eyes above the player's origin.
 const EYE_HEIGHT: f32 = 64.0;
@@ -119,7 +121,10 @@ impl Loader<'_> {
             spawn: spawn(map.entities),
             sun: map.info.sun.as_ref().map_or(Sun { direction: -Vec3::Z, color: Vec3::ONE, intensity: 0.0 }, |s| Sun { direction: s.direction.into(), color: s.color.into(), intensity: s.intensity }),
             sky: default_sky(),
-            ambient: Vec3::from(map.info.ambient) * if grid.is_some() { BAKED_AMBIENT_FLOOR } else { 1.0 },
+            ambient: match grid {
+                Some(_) => Vec3::splat(Vec3::from(map.info.ambient).dot(Vec3::new(0.2126, 0.7152, 0.0722)) * BAKED_AMBIENT_FLOOR),
+                None => Vec3::from(map.info.ambient),
+            },
             exposure: 1.0,
             point_lights: Vec::new(),
             spot_lights: Vec::new(),
@@ -137,9 +142,10 @@ impl Loader<'_> {
                     inner_angle: light.inner_angle,
                     outer_angle: light.outer_angle,
                     casts_shadows: false,
+                    clearance: light.clearance,
                 });
             } else {
-                scene.point_lights.push(PointLight { position, color, intensity: light.intensity, range: light.range, casts_shadows: false });
+                scene.point_lights.push(PointLight { position, color, intensity: light.intensity, range: light.range, casts_shadows: false, clearance: light.clearance });
             }
         }
         log::info!("loaded {}: {} textures, {} materials, {} models, {} lights", map.info.name, self.textures.len(), self.materials.len(), self.models.len(), map.lights.len());
@@ -180,6 +186,21 @@ impl Loader<'_> {
         let mut material = Material {
             base_color: Vec4::from(source.color),
             base_texture: source.base_color.as_deref().map(|t| self.texture(t)),
+            normal_texture: source.normal.as_deref().map(|t| self.texture(t)),
+            layer2: source.layer2.as_ref().and_then(|layer| {
+                Some(Layer {
+                    base_texture: self.texture(layer.base_color.as_deref()?),
+                    normal_texture: layer.normal.as_deref().map(|t| self.texture(t)),
+                    blend_modulate: layer.blend_modulate.as_deref().map(|t| self.texture(t)),
+                })
+            }),
+            detail: source.detail.as_ref().map(|detail| Detail {
+                texture: self.texture(&detail.texture),
+                scale: detail.scale,
+                blend: detail.blend,
+                amount: detail.amount,
+                tint: Vec3::from(detail.tint),
+            }),
             metallic: source.metallic,
             roughness: source.roughness,
             reflectance: source.reflectance,
@@ -190,7 +211,7 @@ impl Loader<'_> {
         };
         if source.kind == MaterialKind::Water {
             // Until water has its own shading: a dark, glossy, see-through surface.
-            material = Material { base_color: Vec4::new(0.05, 0.09, 0.1, 0.7), base_texture: None, roughness: 0.05, two_sided: true, ..material };
+            material = Material { base_color: Vec4::new(0.05, 0.09, 0.1, 0.7), base_texture: None, normal_texture: None, detail: None, roughness: 0.05, two_sided: true, ..material };
         }
         let id = self.renderer.add_material(&material);
         // The map's chosen cubemap, by its position.

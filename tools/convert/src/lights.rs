@@ -4,7 +4,7 @@
 //! white. The `_light` brightness is scaled so that maps look as bright
 //! as they were built to.
 
-use glam::Vec3;
+use glam::{Mat3, Vec3};
 use refract_asset::map::{LIGHT_POINT, LIGHT_SPOT, Light, Sun};
 use refract_core::Angles;
 use refract_formats::bsp::MapEntity;
@@ -13,6 +13,46 @@ use refract_formats::bsp::MapEntity;
 const SUN_PER_BRIGHTNESS: f32 = 0.018;
 /// Point and spot intensity per unit of `_light` brightness.
 const LIGHT_PER_BRIGHTNESS: f32 = 0.2;
+/// Shadow rays always ignore this much around a light (its bulb).
+pub const MIN_CLEARANCE: f32 = 32.0;
+/// Props larger than this are not fixtures (buildings, vehicles): a light
+/// inside them keeps its shadows.
+const MAX_FIXTURE_SIZE: f32 = 192.0;
+
+/// A placed model's box: `rotation` and `origin` take model space to the
+/// world, `scale` included.
+pub struct PlacedBox {
+    pub rotation: Mat3,
+    pub origin: Vec3,
+    pub scale: f32,
+    pub mins: Vec3,
+    pub maxs: Vec3,
+}
+
+/// Gives each light the room its fixture takes: maps put lights inside lamp
+/// models, which must not swallow their light. A small prop whose box holds
+/// the light is its fixture; the clearance reaches its farthest corner.
+pub fn fit_fixtures(lights: &mut [Light], props: &[PlacedBox]) {
+    for light in lights {
+        let position = Vec3::from(light.position);
+        let mut clearance = MIN_CLEARANCE;
+        for prop in props {
+            let size = (prop.maxs - prop.mins) * prop.scale;
+            if size.max_element() > MAX_FIXTURE_SIZE {
+                continue;
+            }
+            let local = prop.rotation.transpose() * (position - prop.origin) / prop.scale;
+            let margin = Vec3::splat(2.0);
+            if local.cmplt(prop.mins - margin).any() || local.cmpgt(prop.maxs + margin).any() {
+                continue;
+            }
+            let far = (local - prop.mins).abs().max((prop.maxs - local).abs()) * prop.scale;
+            clearance = clearance.max(far.length());
+        }
+        light.clearance = clearance;
+    }
+}
+
 /// Flat ambient per unit of `_ambient` brightness.
 const AMBIENT_PER_BRIGHTNESS: f32 = 0.0012;
 /// `light` spawnflag: starts switched off.

@@ -45,6 +45,12 @@ pub fn rgb9e5(color: [f32; 3]) -> u32 {
     r | (g << 9) | (b << 18) | ((exponent as u32) << 27)
 }
 
+/// The colour of [`rgb9e5`] bits.
+pub fn rgb9e5_decode(v: u32) -> [f32; 3] {
+    let scale = 2f32.powi((v >> 27) as i32 - 24);
+    [v & 511, (v >> 9) & 511, (v >> 18) & 511].map(|m| m as f32 * scale)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -59,12 +65,8 @@ mod tests {
 
     #[test]
     fn rgb9e5_round_trip() {
-        let decode = |v: u32| {
-            let scale = 2f32.powi((v >> 27) as i32 - 15 - 9);
-            [v & 511, (v >> 9) & 511, (v >> 18) & 511].map(|m| m as f32 * scale)
-        };
         for color in [[0.0; 3], [1.0, 0.5, 0.25], [12.0, 0.01, 3.0], [0.002, 0.002, 0.004]] {
-            let back = decode(rgb9e5(color));
+            let back = rgb9e5_decode(rgb9e5(color));
             for k in 0..3 {
                 let max = color.iter().copied().fold(0.0, f32::max);
                 assert!((back[k] - color[k]).abs() <= max / 256.0 + 1e-6, "{color:?} -> {back:?}");

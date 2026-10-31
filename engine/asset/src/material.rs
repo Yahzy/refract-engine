@@ -55,6 +55,8 @@ pub struct Material {
     pub two_sided: bool,
     /// Second layer, blended in by the vertex colour's alpha (terrain blends).
     pub layer2: Option<Layer>,
+    /// A finer texture repeated over the base colour.
+    pub detail: Option<Detail>,
     /// Texture scrolling, in UV units per second.
     pub scroll: Option<[f32; 2]>,
 }
@@ -64,6 +66,47 @@ pub struct Material {
 pub struct Layer {
     pub base_color: Option<String>,
     pub normal: Option<String>,
+    /// Sharpens the blend: green is where the layers meet, red how soft
+    /// the transition is.
+    pub blend_modulate: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Detail {
+    pub texture: String,
+    /// How many times the detail repeats per repeat of the base texture.
+    pub scale: f32,
+    pub blend: DetailBlend,
+    /// How strongly the detail applies, 0 to 1.
+    pub amount: f32,
+    /// Linear RGB, multiplied with the detail texture.
+    pub tint: [f32; 3],
+}
+
+impl Default for Detail {
+    fn default() -> Self {
+        Self { texture: String::new(), scale: 4.0, blend: DetailBlend::Modulate2x, amount: 1.0, tint: [1.0; 3] }
+    }
+}
+
+/// How the detail texture combines with the base colour.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DetailBlend {
+    /// Base × 2 × detail: mid-grey leaves the base unchanged.
+    #[default]
+    Modulate2x,
+    /// Base + detail.
+    Add,
+    /// The detail over the base, by the detail's alpha.
+    Over,
+    /// The detail under the base, where the base's alpha is low.
+    Under,
+    /// Base × detail.
+    Multiply,
+    /// Light the detail gives off, added after lighting.
+    Glow,
 }
 
 impl Default for Material {
@@ -81,6 +124,7 @@ impl Default for Material {
             alpha_cutoff: 0.5,
             two_sided: false,
             layer2: None,
+            detail: None,
             scroll: None,
         }
     }

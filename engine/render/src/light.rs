@@ -34,6 +34,9 @@ pub struct PointLight {
     /// Distance at which the light fades out completely, in world units.
     pub range: f32,
     pub casts_shadows: bool,
+    /// Room around the light that ray-traced shadows ignore: the fixture
+    /// (globe, shade, housing) the light sits in.
+    pub clearance: f32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -48,6 +51,8 @@ pub struct SpotLight {
     pub inner_angle: f32,
     pub outer_angle: f32,
     pub casts_shadows: bool,
+    /// See [`PointLight::clearance`].
+    pub clearance: f32,
 }
 
 impl From<&PointLight> for GpuLight {
@@ -61,7 +66,8 @@ impl From<&PointLight> for GpuLight {
             cos_outer: -1.0,
             cos_inner: -1.0,
             shadow: NO_SHADOW,
-            _pad: [0.0; 2],
+            clearance: light.clearance,
+            _pad: 0.0,
         }
     }
 }
@@ -77,7 +83,8 @@ impl From<&SpotLight> for GpuLight {
             cos_outer: light.outer_angle.to_radians().cos(),
             cos_inner: light.inner_angle.to_radians().cos(),
             shadow: NO_SHADOW,
-            _pad: [0.0; 2],
+            clearance: light.clearance,
+            _pad: 0.0,
         }
     }
 }
