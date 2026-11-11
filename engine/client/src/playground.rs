@@ -7,14 +7,17 @@
 //! - east, platforms to jump between;
 //! - south-west, a hall with coloured lights, crates and a crouch tunnel;
 //! - south-east, materials: spheres sweeping roughness and metalness,
-//!   metal pillars, a glossy floor, lights circling around.
+//!   metal pillars, a glossy floor, lights circling around;
+//! - ahead of the spawn, physics: a pyramid and a tower of crates, balls,
+//!   a crate too heavy to push, a seesaw.
 
 use glam::{Mat4, Vec3, Vec4};
 use refract_core::Angles;
-use refract_render::{Camera, Material, PointLight, Renderer, SpotLight, Sun, TextureId, shapes};
-use refract_world::{Brush, MoveSettings, Plane};
+use refract_render::{Camera, Material, MaterialId, PointLight, Renderer, SpotLight, Sun, TextureId, shapes};
+use refract_world::{Brush, MoveSettings, Plane, PropDesc};
 
 use crate::level::{LevelBuilder, Surface};
+use crate::props::{ball_desc, crate_desc};
 use crate::scene::{Orbit, Scene};
 use crate::textures;
 
@@ -40,6 +43,7 @@ struct Surfaces {
     glossy: Surface,
     hazard: Surface,
     light_strip: Surface,
+    wood: Surface,
 }
 
 impl Surfaces {
@@ -54,6 +58,7 @@ impl Surfaces {
         let orange = gridded(level, Vec3::new(0.95, 0.42, 0.1), 0.55);
         let blue = gridded(level, Vec3::new(0.2, 0.42, 0.95), 0.35);
         let green = gridded(level, Vec3::new(0.3, 0.75, 0.25), 0.6);
+        let wood = gridded(level, Vec3::new(0.62, 0.42, 0.24), 0.7);
         let plain = |level: &mut LevelBuilder, color: Vec3, metallic: f32, roughness: f32, normal: Option<TextureId>| {
             level.surface(&Material { base_color: color.extend(1.0), metallic, roughness, normal_texture: normal, ..Default::default() }, 1.0)
         };
@@ -70,6 +75,7 @@ impl Surfaces {
             glossy: plain(level, Vec3::new(0.03, 0.03, 0.035), 0.0, 0.06, Some(tiles)),
             hazard: level.surface(&Material { base_color: Vec4::new(0.05, 0.12, 0.03, 1.0), emissive: Vec3::new(0.06, 0.25, 0.02), roughness: 0.3, ..Default::default() }, 1.0),
             light_strip: level.surface(&Material { base_color: Vec4::new(0.0, 0.0, 0.0, 1.0), emissive: Vec3::new(1.0, 0.92, 0.8) * 20.0, ..Default::default() }, 1.0),
+            wood,
         }
     }
 }
@@ -89,11 +95,13 @@ pub fn build(renderer: &mut Renderer) -> Scene {
     jumps(&mut level, &s);
     hall(&mut level, &s);
     let orbits = showcase(&mut level, &s);
+    let props = physics(&mut level, &s);
     for position in [Vec3::new(-1200.0, 0.0, 96.0), Vec3::new(-700.0, -1000.0, 96.0), Vec3::new(800.0, -1000.0, 96.0), Vec3::new(800.0, 0.0, 128.0), Vec3::new(-700.0, 900.0, 200.0), Vec3::new(700.0, 950.0, 400.0)] {
         level.reflection(position);
     }
     level.finish(&mut scene);
     scene.orbits = orbits;
+    scene.props = props;
     scene
 }
 
@@ -247,4 +255,40 @@ fn showcase(level: &mut LevelBuilder, s: &Surfaces) -> Vec<Orbit> {
             Orbit { center: center + Vec3::Z * height, radius, speed, phase, color, intensity: 30.0, range: 600.0, marker }
         })
         .collect()
+}
+
+/// Ahead of the spawn: props to push, climb, knock over and throw.
+fn physics(level: &mut LevelBuilder, s: &Surfaces) -> Vec<(PropDesc, MaterialId)> {
+    let mut props = Vec::new();
+    // A pyramid of crates, four wide.
+    let half = 16.0;
+    for row in 0..4 {
+        for i in 0..4 - row {
+            let y = (i as f32 - (3 - row) as f32 * 0.5) * (2.0 * half + 1.0);
+            props.push((crate_desc(Vec3::new(-700.0, y, half + row as f32 * (2.0 * half + 0.5)), Vec3::splat(half), 20.0), s.wood.material));
+        }
+    }
+    // A tower of small crates.
+    for i in 0..8 {
+        props.push((crate_desc(Vec3::new(-850.0, 250.0, 12.0 + i as f32 * 24.5), Vec3::splat(12.0), 8.0), s.orange.material));
+    }
+    // Balls of growing size.
+    for (i, radius) in [6.0, 10.0, 14.0, 20.0, 28.0].into_iter().enumerate() {
+        let mass = 4.0 * (radius / 10.0f32).powi(3);
+        props.push((ball_desc(Vec3::new(-950.0 + i as f32 * 80.0, -250.0, radius), radius, mass), s.blue.material));
+    }
+    // Too heavy to push: climb it instead.
+    props.push((crate_desc(Vec3::new(-450.0, 300.0, 32.0), Vec3::splat(32.0), 800.0), s.steel.material));
+    // A seesaw: a plank on a wedge.
+    let (x, y, top) = (-400.0, -250.0, 24.0);
+    let planes = [
+        Plane::new(-Vec3::Z, Vec3::ZERO),
+        Plane::new(Vec3::new(1.0, 0.0, 1.0), Vec3::new(x, 0.0, top)),
+        Plane::new(Vec3::new(-1.0, 0.0, 1.0), Vec3::new(x, 0.0, top)),
+        Plane::new(Vec3::Y, Vec3::new(0.0, y + 48.0, 0.0)),
+        Plane::new(-Vec3::Y, Vec3::new(0.0, y - 48.0, 0.0)),
+    ];
+    level.brush(Brush::new(&planes).expect("wedge"), s.concrete);
+    props.push((crate_desc(Vec3::new(x, y, top + 3.5), Vec3::new(128.0, 24.0, 3.0), 30.0), s.wood.material));
+    props
 }

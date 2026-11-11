@@ -23,8 +23,9 @@ refract/
 │  ├─ render/          refract-render    rendu wgpu + shaders Slang (shaders/*.slang, shaders/lib/) ✅
 │  ├─ client/          binaire `refract` : terrain de jeu à pied ; maps converties et scène de test en caméra libre ✅
 │  ├─ asset/           refract-asset     format natif : définition, écriture, lecture (mmap) ✅
-│  └─ world/           refract-world     collisions, mouvement du joueur, ticks fixes, sans fenêtre ni GPU ✅ (entités à venir)
-│     plus tard : physics/, net/, script/ (LuaJIT), audio/, server/ (binaire dédié)
+│  ├─ physics/         refract-physics   corps rigides : interface sûre sur Box3D (sous-module box3d/, couche C shim/) ✅
+│  └─ world/           refract-world     collisions, entités, props physiques, mouvement du joueur, ticks fixes, sans fenêtre ni GPU ✅
+│     plus tard : net/, script/ (LuaJIT), audio/, server/ (binaire dédié)
 ├─ tools/              ce qui prépare le contenu, hors du jeu
 │  ├─ formats/         refract-formats   lecteurs de formats : VFS Steam/VPK/GMA, BSP, MDL, VTF, VMT, KeyValues
 │  └─ convert/         refract-convert   BSP/VMT/VTF/MDL → format natif (glTF/FBX plus tard) ✅
@@ -37,9 +38,9 @@ Les crates d'`engine/` sont créées au fur et à mesure de leur premier code, p
 ### Règles de structure
 
 - **`engine/*` ne dépend jamais de `tools/*`.** Toute la complexité des formats importés reste dans les outils (vérifié par le test `engine/core/tests/structure.rs`).
-- **Dépendances dans un seul sens** : `core` → `asset` → `world` / `render` → `client`. `world` ne connaît ni la fenêtre ni le GPU (il doit pouvoir tourner dans un serveur dédié) ; `render` lit l'état du monde, il ne le modifie pas.
+- **Dépendances dans un seul sens** : `core` → `asset` → `world` / `render` → `client`, et `physics` → `world`. `world` ne connaît ni la fenêtre ni le GPU (il doit pouvoir tourner dans un serveur dédié) ; `render` lit l'état du monde, il ne le modifie pas.
 - **Une crate = une responsabilité**, un module = un système, des fichiers courts nommés d'après ce qu'ils font.
-- Pas d'état global. `thiserror` dans les bibliothèques, `anyhow` dans les binaires.
+- Pas d'état global (seule exception : l'unité de longueur de la bibliothèque physique, fixée une fois pour le processus). `thiserror` dans les bibliothèques, `anyhow` dans les binaires.
 - Code, commentaires et commits en anglais.
 
 ## 3. Décisions techniques
@@ -55,7 +56,7 @@ Les crates d'`engine/` sont créées au fur et à mesure de leur premier code, p
 | Scripting | `mlua` + **LuaJIT**, sandboxé | Rapide et connu des moddeurs ; le code des serveurs s'exécute chez les joueurs |
 | Maths | `glam` | Standard de l'écosystème |
 | Collisions du joueur | **maison** : brushes convexes, balayage d'une boîte | Le modèle qui donne marches, glisse sur les pentes et surf exactement ; c'est aussi la forme des volumes des maps converties |
-| Physique des objets | à choisir (`rapier3d`, Jolt…) | Plus tard |
+| Physique des objets | **Box3D** (C, licence MIT), sous-module git `engine/physics/box3d` épinglé sur un commit, compilé par `build.rs` avec `cc` | Moteur récent, rapide (SIMD, sommeil, continu), API C simple. Encore en alpha : on monte de version quand on veut. Une couche C maison (`shim/physics.c`) ne fait passer que des valeurs simples, pour ne pas recopier en Rust ses grosses structures de définition ; un test compare les tailles des structures partagées |
 | Réseau | à choisir (UDP, snapshots + delta) | Plus tard |
 | Formats d'import | BSP, VMF, MDL, VTF, VMT, **glTF** d'abord, FBX ensuite (`ufbx`) | glTF est le standard ouvert ; FBX est propriétaire et complexe |
 
@@ -135,9 +136,20 @@ Le réseau n'est pas codé tout de suite, mais tout est préparé pour lui :
 - **Ticks** : 66,67 par seconde (`TickClock` accumule le temps des images, rattrape au plus 0,25 s). Le client interpole la position des yeux entre les deux derniers ticks, et lisse les marches (la vue rattrape la hauteur en ~0,06 s au lieu de sauter de 18 unités).
 - **Client** : la souris tourne la vue à chaque image (0,066° par compte), les touches sont lues à chaque tick ; un appui sur Espace ou un cran de molette attend le tick suivant (sauter à la molette). Échap libère la souris, puis quitte ; un clic la reprend.
 
+### Entités et props physiques (`refract-world`, `refract-physics`)
+
+- **Entités** : `Entities<T>` range des valeurs sous des `EntityId` (index + génération) ; un id retiré ne désigne jamais la valeur qui reprend son emplacement. L'id tient sur 64 bits (`to_bits`), pour le réseau et les scripts.
+- **`refract-physics`** : interface sûre sur Box3D (mondes, corps statiques, cinématiques ou dynamiques, formes boîte, sphère et enveloppe convexe, impulsions, requêtes par boîte). Les ids de corps sont vérifiés à chaque appel (panique après destruction, jamais de comportement indéfini). La bibliothèque travaille dans les unités du moteur : on lui donne le nombre d'unités par mètre, donc positions, vitesses et gravité sont en pouces ; seules les densités restent en kg/m³ (converties à la frontière) et les masses en kg.
+- **`World`** : les brushes du niveau (collisions du joueur, et un corps statique fait d'une enveloppe convexe par brush pour la physique) et les **props** (une entité, un corps dynamique, une forme boîte ou sphère). La physique avance au même tick que le joueur (4 sous-pas) ; chaque prop garde sa pose du tick précédent, et le client dessine entre les deux. Une prop tombée sous -16384 est retirée.
+- **Joueur et props** : le joueur garde son propre mouvement. Avant chaque tick, les props proches (requête par boîte autour du déplacement) deviennent des brushes à leur pose actuelle (plans des faces tournés, biseaux recalculés : ils suivent les axes du monde) et passent dans les mêmes balayages que le niveau (trait `Solid`). On marche donc sur une caisse, on la monte comme une marche, on s'y cogne. Une sphère est vue par le joueur comme un solide à 26 faces qui l'entoure. Les lancers de formes de la bibliothèque ne servent pas ici : ils signalent un contact initial dès 0,2 unité de distance, ce qui bloquerait un joueur posé sur une caisse.
+  - **pousser** : chaque prop heurtée de côté reçoit l'impulsion d'un choc mou entre le joueur (85 kg) et elle, limitée au poids du joueur sur le tick ; le joueur garde ensuite la vitesse que la prop a prise. Une caisse de 10 kg suit la marche, une de 100 kg avance lentement, une de 1000 kg ne bouge pas ;
+  - **peser** : la prop sous les pieds reçoit le poids du joueur à chaque tick (une bascule penche) ;
+  - **recevoir** : un corps cinématique en boîte suit le joueur (vitesse fixée pour rejoindre sa position, un peu plus petit que sa boîte pour ne pas frotter ce qu'il longe), si bien que les props tombent sur le joueur et y restent posées au lieu de le traverser ; il disparaît en noclip et est refait quand le joueur s'accroupit ou se relève.
+- **Client** (`game.rs`, `props.rs`) : `Game` lit les commandes, fait tourner les ticks (joueur puis physique) et place une instance du rendu par prop (maillage partagé par forme et taille, instances cachées réutilisées). F lance une caisse, G une balle, H une grande caisse légère, Retour arrière retire ce qui a été lancé. `--screenshot` laisse la physique tourner `--time` secondes, joueur immobile.
+
 ### Terrain de jeu (`engine/client/src/playground.rs`)
 
-Le niveau chargé sans `+map` : construit en code avec des brushes, qui donnent à la fois les collisions, la géométrie dessinée (textures projetées selon l'axe principal de chaque face, 256 unités par répétition) et ce que trace le baker. Textures générées en code : une grille (cellules de 16, dalles de 64) et le relief des dalles en normal map. Au lancement, le baker GPU cuit les sondes (cellules de 32 unités, ~180 000 sondes, 3 rebonds) et 6 cubemaps de reflet, en 0,2 à 0,3 s ; sans GPU capable de lancer des rayons, le ciel seul éclaire. Zones : escaliers, marches trop hautes, rampes de 30° et 55°, caisses de 32 à 80 de haut ; rampe de surf à 60° sous une plateforme à 384 ; plateformes à sauter au-dessus d'un sol lumineux ; hall couvert aux lumières colorées avec tunnel à franchir accroupi ; vitrine de matériaux (sphères de rugosité et métal, piliers d'acier, d'or et de cuivre, sol noir brillant, lumières en orbite avec ombres).
+Le niveau chargé sans `+map` : construit en code avec des brushes, qui donnent à la fois les collisions, la géométrie dessinée (textures projetées selon l'axe principal de chaque face, 256 unités par répétition) et ce que trace le baker. Textures générées en code : une grille (cellules de 16, dalles de 64) et le relief des dalles en normal map. Au lancement, le baker GPU cuit les sondes (cellules de 32 unités, ~180 000 sondes, 3 rebonds) et 6 cubemaps de reflet, en 0,2 à 0,3 s ; sans GPU capable de lancer des rayons, le ciel seul éclaire. Zones : escaliers, marches trop hautes, rampes de 30° et 55°, caisses de 32 à 80 de haut ; rampe de surf à 60° sous une plateforme à 384 ; plateformes à sauter au-dessus d'un sol lumineux ; hall couvert aux lumières colorées avec tunnel à franchir accroupi ; vitrine de matériaux (sphères de rugosité et métal, piliers d'acier, d'or et de cuivre, sol noir brillant, lumières en orbite avec ombres) ; devant le départ, de la physique : pyramide de caisses de 20 kg, tour de petites caisses, balles de tailles croissantes, caisse d'acier de 800 kg trop lourde à pousser, bascule (planche sur un coin).
 
 ### Rendu (`refract-render`)
 
@@ -182,7 +194,7 @@ Mesures (scène de départ, 1280×720, `--bench`) : petite map 0,3 ms de CPU et 
 4. **`refract-convert`** : BSP → format natif ; le client charge les maps converties. ✅
 5. **Nouveau rendu** jusqu'à la parité avec l'ancien visualiseur par captures (liste en §5).
 6. **Import VMF** + rechargement en direct, puis **baker d'éclairage GPU**.
-7. **Couche jeu** : `world` (entités, tick), physique, LuaJIT, puis réseau et serveur dédié. Commencée le 2026-10-31, rendu mis en pause : joueur au mouvement complet sur le terrain de jeu.
+7. **Couche jeu** : `world` (entités, tick), physique, LuaJIT, puis réseau et serveur dédié. Commencée le 2026-10-31, rendu mis en pause : joueur au mouvement complet sur le terrain de jeu ; entités et props physiques (Box3D) le 2026-11-06.
 8. **Plateforme** (section 7).
 
 ## 7. Pistes pour la couche jeu et la plateforme
@@ -199,5 +211,6 @@ Mesures (scène de départ, 1280×720, `--bench`) : petite map 0,3 ms de CPU et 
 
 ## 8. Points à trancher plus tard
 
-- Physique (`rapier3d` ou Jolt) et transport réseau
+- Transport réseau
+- Attraper et lancer les props (outil façon pistolet à gravité), contraintes et joints, props aux formes des modèles convertis
 - Authentification (Steam ou comptes maison), hébergement des addons

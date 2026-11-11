@@ -10,10 +10,12 @@
 
 mod args;
 mod flycam;
+mod game;
 mod level;
 mod map;
 mod player;
 mod playground;
+mod props;
 mod scene;
 mod test_scene;
 mod textures;
@@ -25,9 +27,10 @@ use std::time::Instant;
 use anyhow::Context;
 use refract_platform::{App, BoxError, Input, KeyCode, MouseButton, Window, WindowConfig};
 use refract_render::{Camera, Renderer, RendererConfig};
+use refract_world::PlayerCommand;
 
 use args::Args;
-use player::LocalPlayer;
+use game::Game;
 use scene::Scene;
 
 /// The game folder: content found there is mounted first, and converted
@@ -59,7 +62,7 @@ struct Client {
 
 /// Who moves the camera.
 enum Control {
-    Player(Box<LocalPlayer>),
+    Player(Box<Game>),
     Fly(Camera),
 }
 
@@ -70,9 +73,10 @@ impl Client {
         let mut scene = load_scene(&mut renderer, args)?;
         let camera = initial_camera(&scene, args);
         let control = match scene.collision.take() {
-            Some(world) => {
+            Some(collision) => {
                 let origin = args.position.unwrap_or(playground::SPAWN);
-                Control::Player(Box::new(LocalPlayer::new(world, origin, camera.angles.yaw)))
+                let props = std::mem::take(&mut scene.props);
+                Control::Player(Box::new(Game::new(&mut renderer, collision, props, origin, camera.angles.yaw)))
             }
             None => Control::Fly(camera),
         };
@@ -115,9 +119,9 @@ impl App for Client {
                 } else if input.button_down(MouseButton::Left) {
                     self.capture(window, true);
                 }
-                let Control::Player(player) = &mut self.control else { unreachable!() };
-                player.update(input, self.mouse_captured, dt);
-                player.camera()
+                let Control::Player(game) = &mut self.control else { unreachable!() };
+                game.update(input, self.mouse_captured, dt, &mut self.renderer);
+                game.camera()
             }
         };
 
@@ -129,7 +133,7 @@ impl App for Client {
         }
         if let Some(fps) = self.fps.tick(dt) {
             let speed = match &self.control {
-                Control::Player(player) => format!(" — {:.0} u/s", player.speed()),
+                Control::Player(game) => format!(" — {:.0} u/s", game.speed()),
                 Control::Fly(_) => String::new(),
             };
             window.set_title(&format!("Refract — {fps:.0} FPS ({:.2} ms){speed}", 1000.0 / fps));
@@ -158,8 +162,20 @@ fn screenshot(args: &Args, path: &str) -> anyhow::Result<()> {
     let (width, height) = args.size;
     let mut renderer = Renderer::offscreen(width, height, RendererConfig { vsync: false, ray_tracing: args.ray_tracing })?;
     let mut scene = load_scene(&mut renderer, args)?;
+    let mut camera = initial_camera(&scene, args);
+    // A level played on foot: its props settle for `--time` seconds, the
+    // player standing still.
+    if let Some(collision) = scene.collision.take() {
+        let origin = args.position.unwrap_or(playground::SPAWN);
+        let mut game = Game::new(&mut renderer, collision, std::mem::take(&mut scene.props), origin, camera.angles.yaw);
+        let steps = (args.time * 60.0).ceil() as u32;
+        for _ in 0..steps {
+            game.advance(PlayerCommand { angles: camera.angles, ..Default::default() }, false, args.time / steps as f32, &mut renderer);
+        }
+        camera = Camera { angles: camera.angles, ..game.camera() };
+    }
     scene.update(&mut renderer, args.time);
-    renderer.render(&scene.frame(initial_camera(&scene, args), args.time))?;
+    renderer.render(&scene.frame(camera, args.time))?;
     let image = renderer.read_image()?;
 
     let file = std::fs::File::create(path).with_context(|| format!("creating {path}"))?;

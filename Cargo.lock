@@ -1970,6 +1970,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "refract-physics"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "glam",
+]
+
+[[package]]
 name = "refract-platform"
 version = "0.1.0"
 dependencies = [
@@ -1998,7 +2006,9 @@ name = "refract-world"
 version = "0.1.0"
 dependencies = [
  "glam",
+ "log",
  "refract-core",
+ "refract-physics",
 ]
 
 [[package]]

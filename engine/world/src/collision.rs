@@ -8,7 +8,9 @@
 //! edges. Brushes store those bevels, so a sweep is a clip of a segment
 //! against a handful of planes.
 
-use glam::{Vec3, Vec3Swizzles};
+use glam::{Quat, Vec3, Vec3Swizzles};
+
+use crate::entity::EntityId;
 
 /// How far sweeps stop before a surface: movement never ends exactly on a
 /// plane, where rounding could put it inside on the next sweep.
@@ -54,7 +56,7 @@ impl Aabb {
         bounds
     }
 
-    fn overlaps(&self, other: &Aabb) -> bool {
+    pub fn overlaps(&self, other: &Aabb) -> bool {
         self.min.cmple(other.max).all() && other.min.cmple(self.max).all()
     }
 }
@@ -138,6 +140,36 @@ impl Brush {
 
     pub fn bounds(&self) -> Aabb {
         self.bounds
+    }
+
+    /// The corners.
+    pub fn vertices(&self) -> Vec<Vec3> {
+        let mut vertices: Vec<Vec3> = Vec::new();
+        for p in self.polygons.iter().flatten() {
+            if !vertices.iter().any(|q| q.distance_squared(*p) < ON_PLANE * ON_PLANE) {
+                vertices.push(*p);
+            }
+        }
+        vertices
+    }
+
+    /// The brush turned by `rotation` then moved by `translation`. Its
+    /// bevels are made anew: they follow the world axes.
+    pub fn transformed(&self, rotation: Quat, translation: Vec3) -> Self {
+        let faces = self.polygons.len();
+        let planes = self.planes[..faces]
+            .iter()
+            .map(|p| {
+                let normal = rotation * p.normal;
+                Plane { normal, dist: p.dist + normal.dot(translation) }
+            })
+            .collect();
+        let polygons = self.polygons.iter().map(|polygon| polygon.iter().map(|p| rotation * *p + translation).collect()).collect();
+        let mut brush = Self { planes, polygons, bounds: self.bounds };
+        let vertices = brush.vertices();
+        brush.bounds = Aabb::around(&vertices);
+        brush.add_bevels(&vertices);
+        brush
     }
 
     /// Adds the planes the brush grown by a box needs and the faces lack:
@@ -240,6 +272,55 @@ pub struct Trace {
     pub start_solid: bool,
     /// The box stayed inside a solid the whole way: it cannot move.
     pub all_solid: bool,
+    /// The entity hit, if what stopped the sweep is one (and not the level).
+    pub entity: Option<EntityId>,
+}
+
+/// Something boxes sweep through.
+pub trait Solid {
+    /// Sweeps `hull` from `start` to `end`, stopping at the first solid.
+    fn trace(&self, start: Vec3, end: Vec3, hull: Hull) -> Trace;
+
+    /// Whether `hull` at `position` overlaps a solid.
+    fn is_solid(&self, position: Vec3, hull: Hull) -> bool {
+        self.trace(position, position, hull).start_solid
+    }
+}
+
+/// A sweep through several sets of brushes, keeping the nearest hit.
+pub struct Sweep {
+    start: Vec3,
+    end: Vec3,
+    hull: Hull,
+    swept: Aabb,
+    trace: Trace,
+}
+
+impl Sweep {
+    pub fn new(start: Vec3, end: Vec3, hull: Hull) -> Self {
+        let trace = Trace { fraction: 1.0, end, normal: None, start_solid: false, all_solid: false, entity: None };
+        let swept = Aabb::new(start.min(end) + hull.min - DIST_EPSILON, start.max(end) + hull.max + DIST_EPSILON);
+        Self { start, end, hull, swept, trace }
+    }
+
+    /// Clips against a brush, part of `entity` (or of the level).
+    pub fn clip(&mut self, brush: &Brush, entity: Option<EntityId>) {
+        if self.trace.all_solid || !brush.bounds.overlaps(&self.swept) {
+            return;
+        }
+        let fraction = self.trace.fraction;
+        clip(brush, self.start, self.end, self.hull, &mut self.trace);
+        if self.trace.fraction < fraction {
+            self.trace.entity = entity;
+        }
+    }
+
+    pub fn finish(mut self) -> Trace {
+        if self.trace.fraction < 1.0 {
+            self.trace.end = self.start + (self.end - self.start) * self.trace.fraction;
+        }
+        self.trace
+    }
 }
 
 /// All the solid geometry of a level.
@@ -257,27 +338,19 @@ impl Collision {
         &self.brushes
     }
 
-    /// Sweeps `hull` from `start` to `end`, stopping at the first solid.
-    pub fn trace(&self, start: Vec3, end: Vec3, hull: Hull) -> Trace {
-        let mut trace = Trace { fraction: 1.0, end, normal: None, start_solid: false, all_solid: false };
-        let swept = Aabb::new(start.min(end) + hull.min - DIST_EPSILON, start.max(end) + hull.max + DIST_EPSILON);
+    /// Clips a sweep against every brush.
+    pub fn clip(&self, sweep: &mut Sweep) {
         for brush in &self.brushes {
-            if brush.bounds.overlaps(&swept) {
-                clip(brush, start, end, hull, &mut trace);
-                if trace.all_solid {
-                    break;
-                }
-            }
+            sweep.clip(brush, None);
         }
-        if trace.fraction < 1.0 {
-            trace.end = start + (end - start) * trace.fraction;
-        }
-        trace
     }
+}
 
-    /// Whether `hull` at `position` overlaps a solid.
-    pub fn is_solid(&self, position: Vec3, hull: Hull) -> bool {
-        self.trace(position, position, hull).start_solid
+impl Solid for Collision {
+    fn trace(&self, start: Vec3, end: Vec3, hull: Hull) -> Trace {
+        let mut sweep = Sweep::new(start, end, hull);
+        self.clip(&mut sweep);
+        sweep.finish()
     }
 }
 
@@ -401,5 +474,19 @@ mod tests {
         let trace = world.trace(Vec3::new(200.0, 0.0, 0.0), Vec3::ZERO, hull);
         let expected = 50.0 * std::f32::consts::SQRT_2 + 8.0;
         assert!((trace.end.x - expected).abs() < 0.1, "{} vs {expected}", trace.end.x);
+    }
+
+    #[test]
+    fn transformed_brushes_match_brushes_built_in_place() {
+        let r = glam::Quat::from_rotation_z(0.6) * glam::Quat::from_rotation_x(0.3);
+        let t = Vec3::new(100.0, -20.0, 40.0);
+        let moved = Brush::cuboid(Vec3::splat(-10.0), Vec3::splat(10.0)).transformed(r, t);
+        let planes: Vec<Plane> = [Vec3::X, -Vec3::X, Vec3::Y, -Vec3::Y, Vec3::Z, -Vec3::Z].iter().map(|n| Plane::new(r * *n, t + r * *n * 10.0)).collect();
+        let built = Brush::new(&planes).unwrap();
+        assert!(moved.bounds.min.abs_diff_eq(built.bounds.min, 1e-3) && moved.bounds.max.abs_diff_eq(built.bounds.max, 1e-3));
+        assert_eq!(moved.planes.len(), built.planes.len());
+        for plane in &built.planes {
+            assert!(moved.planes.iter().any(|p| p.normal.abs_diff_eq(plane.normal, 1e-3) && (p.dist - plane.dist).abs() < 1e-2), "{plane:?}");
+        }
     }
 }

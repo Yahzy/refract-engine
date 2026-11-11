@@ -32,6 +32,7 @@ refract-asset = { path = "engine/asset" }
 refract-core = { path = "engine/core" }
 refract-platform = { path = "engine/platform" }
 refract-render = { path = "engine/render" }
+refract-physics = { path = "engine/physics" }
 refract-world = { path = "engine/world" }
 refract-formats = { path = "tools/formats" }
 

@@ -1,14 +1,20 @@
-//! The game simulation: solid geometry, player movement, fixed ticks.
+//! The game simulation: solid geometry, entities, physics objects, player
+//! movement, fixed ticks.
 //!
 //! Nothing here knows about windows or GPUs: a dedicated server runs the same
 //! code without them. The simulation advances in fixed ticks, whatever the
 //! frame rate; what is drawn is interpolated between the last two ticks.
 
 pub mod collision;
+pub mod entity;
 pub mod movement;
+pub mod world;
 
-pub use collision::{Aabb, Brush, Collision, Hull, Plane, Trace};
-pub use movement::{MoveSettings, Player, PlayerCommand};
+pub use collision::{Aabb, Brush, Collision, Hull, Plane, Solid, Trace};
+pub use entity::{Entities, EntityId};
+pub use movement::{MoveSettings, Player, PlayerCommand, Touch};
+pub use refract_physics::Material;
+pub use world::{Prop, PropDesc, PropShape, World};
 
 /// Simulation ticks per second.
 pub const TICK_RATE: f32 = 66.0 + 2.0 / 3.0;

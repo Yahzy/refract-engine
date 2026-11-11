@@ -25,7 +25,9 @@ Gameplay, physics, networking and scripting come next.
 
 ## Building
 
-Requirements: Rust (2024 edition), a Vulkan GPU, and the [Vulkan SDK](https://vulkan.lunarg.com/) for `slangc` (or set `SLANGC` to its path).
+Requirements: Rust (2024 edition), a C compiler (MSVC, GCC or Clang) for the physics library, a Vulkan GPU, and the [Vulkan SDK](https://vulkan.lunarg.com/) for `slangc` (or set `SLANGC` to its path).
+
+The physics library ([Box3D](https://github.com/erincatto/box3d)) is a git submodule: clone with `--recursive`, or run `git submodule update --init`.
 
 ```
 cargo build --release -p refract-client -p refract-convert

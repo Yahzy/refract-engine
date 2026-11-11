@@ -3,8 +3,10 @@ name = "refract-world"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Game simulation: collision, player movement, fixed ticks; no window, no GPU"
+description = "Game simulation: collision, entities, physics objects, player movement, fixed ticks; no window, no GPU"
 
 [dependencies]
 refract-core.workspace = true
+refract-physics.workspace = true
+log.workspace = true
 glam.workspace = true

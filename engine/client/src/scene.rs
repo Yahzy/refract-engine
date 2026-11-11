@@ -5,8 +5,8 @@
 use std::f32::consts::TAU;
 
 use glam::{Mat4, Vec3};
-use refract_render::{Camera, Fog, Frame, InstanceId, PointLight, Renderer, Sky, SpotLight, Sun};
-use refract_world::Collision;
+use refract_render::{Camera, Fog, Frame, InstanceId, MaterialId, PointLight, Renderer, Sky, SpotLight, Sun};
+use refract_world::{Collision, PropDesc};
 
 pub struct Scene {
     pub spawn: Camera,
@@ -22,6 +22,8 @@ pub struct Scene {
     pub fog: Option<Fog>,
     /// What players collide with; none for levels only flown through.
     pub collision: Option<Collision>,
+    /// Physics objects placed in the level, and what they are drawn with.
+    pub props: Vec<(PropDesc, MaterialId)>,
     /// `point_lights` and the orbiting lights at the current time.
     lights: Vec<PointLight>,
 }
@@ -52,6 +54,7 @@ impl Scene {
             orbits: Vec::new(),
             fog: None,
             collision: None,
+            props: Vec::new(),
             lights: Vec::new(),
         }
     }

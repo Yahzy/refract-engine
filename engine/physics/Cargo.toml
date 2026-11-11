@@ -1,0 +1,13 @@
+[package]
+name = "refract-physics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Rigid body physics: a safe interface over the Box3D library (MIT, git submodule in box3d/)"
+links = "box3d"
+
+[dependencies]
+glam.workspace = true
+
+[build-dependencies]
+cc = "1"

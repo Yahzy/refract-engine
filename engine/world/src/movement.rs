@@ -9,7 +9,8 @@ use glam::{Vec3, Vec3Swizzles};
 use refract_core::Angles;
 use refract_core::axes::UP;
 
-use crate::collision::{Collision, DIST_EPSILON, Hull, Trace, horizontal};
+use crate::collision::{DIST_EPSILON, Hull, Solid, Trace, horizontal};
+use crate::entity::EntityId;
 
 /// Tunable movement. Speeds in units per second.
 #[derive(Clone, Copy, Debug)]
@@ -57,6 +58,8 @@ pub struct MoveSettings {
     /// Multiplies acceleration and air control when pushed up along a slope
     /// too steep to stand on.
     pub steep_slope_friction: f32,
+    /// Kilograms: how hard the player pushes objects and weighs on them.
+    pub mass: f32,
 }
 
 impl Default for MoveSettings {
@@ -88,6 +91,7 @@ impl Default for MoveSettings {
             noclip_run_factor: 3.0,
             noclip_crouch_factor: 0.1,
             steep_slope_friction: 0.25,
+            mass: 85.0,
         }
     }
 }
@@ -114,6 +118,8 @@ pub struct Player {
     pub origin: Vec3,
     pub velocity: Vec3,
     pub on_ground: bool,
+    /// The entity stood on, if the ground is one.
+    pub ground_entity: Option<EntityId>,
     /// The box is crouched (half height).
     pub crouched: bool,
     /// How far the view has lowered towards crouching, 0 to 1.
@@ -127,7 +133,7 @@ pub struct Player {
 
 impl Player {
     pub fn new(origin: Vec3) -> Self {
-        Self { origin, velocity: Vec3::ZERO, on_ground: false, crouched: false, crouch_amount: 0.0, noclip: false, jump_held: false, surface_friction: 1.0 }
+        Self { origin, velocity: Vec3::ZERO, on_ground: false, ground_entity: None, crouched: false, crouch_amount: 0.0, noclip: false, jump_held: false, surface_friction: 1.0 }
     }
 
     pub fn hull(&self, settings: &MoveSettings) -> Hull {
@@ -143,16 +149,29 @@ impl Player {
         self.origin + UP * self.eye_height(settings)
     }
 
-    /// Advances the player by one tick of `dt` seconds.
-    pub fn step(&mut self, command: &PlayerCommand, world: &Collision, settings: &MoveSettings, dt: f32) {
-        let mut mover = Mover { player: self, world, settings, dt };
+    /// Advances the player by one tick of `dt` seconds, and returns the
+    /// entities it ran into.
+    pub fn step(&mut self, command: &PlayerCommand, world: &dyn Solid, settings: &MoveSettings, dt: f32) -> Vec<Touch> {
+        let mut mover = Mover { player: self, world, settings, dt, touches: Vec::new() };
         if mover.player.noclip {
             mover.fly(command);
         } else {
             mover.walk(command);
         }
+        let touches = mover.touches;
         self.jump_held = command.jump;
+        touches
     }
+}
+
+/// An entity the player ran into during a tick.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Touch {
+    pub entity: EntityId,
+    /// The entity's surface, facing the player.
+    pub normal: Vec3,
+    /// The player's velocity when it hit.
+    pub velocity: Vec3,
 }
 
 fn hull(settings: &MoveSettings, crouched: bool) -> Hull {
@@ -167,9 +186,10 @@ const MAX_BUMPS: usize = 4;
 
 struct Mover<'a> {
     player: &'a mut Player,
-    world: &'a Collision,
+    world: &'a dyn Solid,
     settings: &'a MoveSettings,
     dt: f32,
+    touches: Vec<Touch>,
 }
 
 impl Mover<'_> {
@@ -369,6 +389,9 @@ impl Mover<'_> {
                 plane_count = 0;
             }
             let Some(normal) = trace.normal else { break };
+            if let Some(entity) = trace.entity {
+                self.touch(Touch { entity, normal, velocity });
+            }
             if trace.fraction == 0.0 {
                 // Stopped before moving: sliding along this surface, rounding
                 // left the box nearer to it than the sweeps keep. Step back
@@ -421,11 +444,22 @@ impl Mover<'_> {
         }
     }
 
+    /// Keeps the hardest hit on each entity.
+    fn touch(&mut self, touch: Touch) {
+        let into = |t: &Touch| -t.velocity.dot(t.normal);
+        match self.touches.iter_mut().find(|t| t.entity == touch.entity) {
+            Some(t) if into(t) < into(&touch) => *t = touch,
+            Some(_) => {}
+            None => self.touches.push(touch),
+        }
+    }
+
     /// Whether the player stands on ground: a surface flat enough within 2
     /// units below. Pushed up along a steeper one, acceleration weakens.
     fn categorize(&mut self) {
         let s = self.settings;
         self.player.surface_friction = 1.0;
+        self.player.ground_entity = None;
         if self.player.velocity.z > s.leave_ground_speed {
             self.player.on_ground = false;
             return;
@@ -433,6 +467,9 @@ impl Mover<'_> {
         let origin = self.player.origin;
         let trace = self.trace(origin, origin - UP * 2.0);
         self.player.on_ground = trace.normal.is_some_and(|n| n.z >= s.min_ground_normal);
+        if self.player.on_ground {
+            self.player.ground_entity = trace.entity;
+        }
         if self.player.on_ground {
             self.player.velocity.z = 0.0;
         } else if trace.normal.is_some() && self.player.velocity.z > 0.0 {
@@ -498,6 +535,7 @@ impl Mover<'_> {
         self.player.velocity = velocity;
         self.player.origin += velocity * self.dt;
         self.player.on_ground = false;
+        self.player.ground_entity = None;
     }
 }
 
@@ -520,7 +558,7 @@ pub fn ground_speed(velocity: Vec3) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::collision::{Brush, Plane};
+    use crate::collision::{Brush, Collision, Plane};
     use crate::TICK;
 
     fn level(extra: Vec<Brush>) -> Collision {
