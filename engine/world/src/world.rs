@@ -25,6 +25,11 @@ const PLAYERS: u64 = 4;
 const SUBSTEPS: u32 = 4;
 /// Props falling below this are removed.
 const KILL_HEIGHT: f32 = -16384.0;
+/// Held props move towards where they are held at most this fast (units/s).
+const HOLD_SPEED: f32 = 1500.0;
+/// The share of the way to where they are held that held props cover each
+/// tick: below one, they ease in instead of overshooting.
+const HOLD_STIFFNESS: f32 = 0.5;
 /// Margin around a player's move within which props are swept against.
 const NEARBY: f32 = 32.0;
 /// The player's physics box is this much smaller than its movement box on
@@ -71,6 +76,9 @@ pub struct Prop {
     body: BodyId,
     /// What players collide with, in the prop's frame.
     brush: Brush,
+    /// Held by a player: players go through it, so that it cannot carry
+    /// the one holding it.
+    held: bool,
 }
 
 impl Prop {
@@ -122,7 +130,7 @@ impl World {
             PropShape::Sphere { radius } => sphere_brush(radius),
         };
         let body = self.physics.create_body(BodyKind::Dynamic, desc.position, rotation, 0);
-        let id = self.props.insert(Prop { shape: desc.shape, position: desc.position, rotation, previous: (desc.position, rotation), body, brush });
+        let id = self.props.insert(Prop { shape: desc.shape, position: desc.position, rotation, previous: (desc.position, rotation), body, brush, held: false });
         self.physics.set_user(body, id.to_bits());
         let shape = match desc.shape {
             PropShape::Box { half_extents } => Shape::Box { half_extents, offset: Vec3::ZERO },
@@ -156,6 +164,29 @@ impl World {
         self.props.get(id).map(|prop| self.physics.velocity(prop.body))
     }
 
+    /// Moves a held prop towards `position` and `rotation` over the next
+    /// tick, against gravity. False if there is no such prop.
+    pub fn hold_prop(&mut self, id: EntityId, position: Vec3, rotation: Quat, dt: f32) -> bool {
+        let Some(prop) = self.props.get_mut(id) else { return false };
+        prop.held = true;
+        let linear = ((position - prop.position) * HOLD_STIFFNESS / dt).clamp_length_max(HOLD_SPEED) + UP * self.gravity * dt;
+        let (axis, angle) = (rotation * prop.rotation.inverse()).normalize().to_axis_angle();
+        // The shorter way round.
+        let angle = if angle > std::f32::consts::PI { angle - std::f32::consts::TAU } else { angle };
+        self.physics.set_velocity(prop.body, linear, axis * angle * HOLD_STIFFNESS / dt);
+        true
+    }
+
+    /// Lets go of a held prop, sent off at `velocity` if given.
+    pub fn release_prop(&mut self, id: EntityId, velocity: Option<Vec3>) {
+        let Some(prop) = self.props.get_mut(id) else { return };
+        prop.held = false;
+        if let Some(velocity) = velocity {
+            let angular = self.physics.angular_velocity(prop.body);
+            self.physics.set_velocity(prop.body, velocity, angular);
+        }
+    }
+
     /// Sweeps a box through the level and the props.
     pub fn trace(&mut self, start: Vec3, end: Vec3, hull: Hull) -> Trace {
         let nearby = self.nearby(start.min(end) + hull.min, start.max(end) + hull.max);
@@ -167,7 +198,8 @@ impl World {
     pub fn move_player(&mut self, player: &mut Player, command: &PlayerCommand, settings: &MoveSettings, dt: f32) {
         let hull = player.hull(settings);
         let reach = player.velocity.abs() * dt + Vec3::splat(settings.step_height + NEARBY);
-        let nearby = self.nearby(player.origin + hull.min - reach, player.origin + hull.max + reach);
+        let mut nearby = self.nearby(player.origin + hull.min - reach, player.origin + hull.max + reach);
+        nearby.retain(|(id, _)| !self.props.get(*id).is_some_and(|prop| prop.held));
         let touches = player.step(command, &Nearby { level: &self.collision, props: &nearby }, settings, dt);
 
         for touch in touches {
@@ -415,5 +447,35 @@ mod tests {
         assert!(prop.rotation.angle_between(Quat::IDENTITY) > 0.1, "it slid instead of rolling");
         assert!(world.prop(lost).is_none());
         assert_eq!(world.props().count(), 1);
+    }
+
+    #[test]
+    fn held_props_go_where_they_are_held_and_let_players_through() {
+        let mut world = level();
+        let id = world.spawn_prop(crate_desc(Vec3::new(100.0, 0.0, 16.0), 16.0, 30.0));
+        let target = Vec3::new(60.0, 40.0, 80.0);
+        let turned = Quat::from_rotation_z(1.0);
+        for _ in 0..60 {
+            assert!(world.hold_prop(id, target, turned, TICK));
+            world.step(TICK);
+        }
+        let prop = world.prop(id).unwrap();
+        assert!(prop.position.distance(target) < 1.0, "{}", prop.position);
+        assert!(prop.rotation.angle_between(turned) < 0.02);
+
+        // Walking into it does not push it, and the player is not stopped.
+        let mut player = Player::new(Vec3::new(0.0, 40.0, 1.0));
+        let settings = MoveSettings::default();
+        let command = PlayerCommand { forward: 1.0, ..Default::default() };
+        for _ in 0..60 {
+            world.hold_prop(id, target, turned, TICK);
+            world.move_player(&mut player, &command, &settings, TICK);
+            world.step(TICK);
+        }
+        assert!(player.origin.x > 100.0, "{}", player.origin);
+
+        world.release_prop(id, Some(Vec3::X * 500.0));
+        world.step(TICK);
+        assert!(world.prop_velocity(id).unwrap().x > 400.0);
     }
 }

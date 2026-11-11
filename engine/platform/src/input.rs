@@ -11,6 +11,7 @@ pub struct Input {
     keys_down: HashSet<KeyCode>,
     keys_pressed: HashSet<KeyCode>,
     buttons_down: HashSet<MouseButton>,
+    buttons_pressed: HashSet<MouseButton>,
     mouse_delta: Vec2,
     wheel: f32,
     focused: bool,
@@ -29,6 +30,11 @@ impl Input {
 
     pub fn button_down(&self, button: MouseButton) -> bool {
         self.buttons_down.contains(&button)
+    }
+
+    /// Whether the button went down since the last frame.
+    pub fn button_pressed(&self, button: MouseButton) -> bool {
+        self.buttons_pressed.contains(&button)
     }
 
     /// Raw mouse motion since the last frame, in device units (+y is down).
@@ -62,9 +68,14 @@ impl Input {
 
     pub(crate) fn on_button(&mut self, button: MouseButton, state: ElementState) {
         match state {
-            ElementState::Pressed => self.buttons_down.insert(button),
-            ElementState::Released => self.buttons_down.remove(&button),
-        };
+            ElementState::Pressed => {
+                self.buttons_pressed.insert(button);
+                self.buttons_down.insert(button);
+            }
+            ElementState::Released => {
+                self.buttons_down.remove(&button);
+            }
+        }
     }
 
     pub(crate) fn on_mouse_motion(&mut self, delta: Vec2) {
@@ -87,6 +98,7 @@ impl Input {
     /// Clears what only lasts one frame.
     pub(crate) fn end_frame(&mut self) {
         self.keys_pressed.clear();
+        self.buttons_pressed.clear();
         self.mouse_delta = Vec2::ZERO;
         self.wheel = 0.0;
     }
